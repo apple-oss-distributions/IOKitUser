@@ -32,6 +32,7 @@ KXKextManagerError _KXKextRepositoryInitWithDirectory(
 KXKextManagerError _KXKextRepositoryInitWithCache(
     KXKextRepositoryRef aRepository,
     CFDictionaryRef     aDictionary,
+    CFURLRef            aDirectory,
     KXKextManagerRef    aManager);
 
 const char * _KXKextRepositoryCopyCanonicalPathnameAsCString(
@@ -83,6 +84,9 @@ void _KXKextRepositoryMarkKextsNotLoaded(KXKextRepositoryRef aRepository);
 void _KXKextRepositoryClearLoadFailures(KXKextRepositoryRef aRepository);
 
 CFDictionaryRef _KXKextRepositoryCopyCacheDictionary(
+    KXKextRepositoryRef aRepository);
+
+Boolean _KXKextRepositoryInvalidateCaches(
     KXKextRepositoryRef aRepository);
 
 #if 0
