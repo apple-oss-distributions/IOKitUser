@@ -7,14 +7,12 @@
 # and Makefile.postamble (both optional), and Makefile will include them.
 #
 
-NAME = cdb
+NAME = ps
 
 PROJECTVERSION = 2.8
 PROJECT_TYPE = Component
-
-HFILES = IOSCSILib.h IOCDBLib.h
-
-CFILES = IOCDBLib.c
+CFILES = IOPowerSources.c
+HFILES = IOPSKeys.h IOPowerSources.h
 
 OTHERSRCS = Makefile.preamble Makefile
 
@@ -27,11 +25,7 @@ LIBS =
 DEBUG_LIBS = $(LIBS)
 PROF_LIBS = $(LIBS)
 
-
-PUBLIC_HEADERS = IOSCSILib.h IOCDBLib.h
-
-PROJECT_HEADERS = IOSCSILib.h IOCDBLib.h
-
+PUBLIC_HEADERS = IOPSKeys.h IOPowerSources.h
 
 
 NEXTSTEP_BUILD_OUTPUT_DIR = /$(USER)/build/$(NAME)
