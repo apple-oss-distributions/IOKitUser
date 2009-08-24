@@ -3,35 +3,42 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * The contents of this file constitute Original Code as defined in and
- * are subject to the Apple Public Source License Version 1.1 (the
- * "License").  You may not use this file except in compliance with the
- * License.  Please obtain a copy of the License at
- * http://www.apple.com/publicsource and read it before using this file.
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
  * 
- * This Original Code and all software distributed under the License are
- * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
 
+
 #if 0
+
+#include <mach/mach_time.h>
 #warning **LOGS**
 #define RLOG 1
 #define DEBG(cref, fmt, args...)  			\
 if (cref->logfile) { 					\
-    fprintf(cref->logfile, "%s: ", __FUNCTION__);	\
+    uint64_t time = mach_absolute_time();	\
+    fprintf(cref->logfile, "%10lld %s: ", ((time - cref->time0) / 1000), __FUNCTION__);	\
     fprintf(cref->logfile, fmt, ## args);		\
     fflush(cref->logfile);				\
 }
 
 #else
+
 #define DEBG(cref, fmt, args...)  {}
+
 #endif
 
 
@@ -299,8 +306,10 @@ struct IOFBConnect
     CFMutableDictionaryRef	iographicsProperties;
 #if RLOG
     FILE *			logfile;
+    uint64_t			time0;
 #else
     void *			__pad;
+    uint64_t			__pad2;
 #endif
     CFMutableDictionaryRef	kernelInfo;
     CFMutableDictionaryRef	modes;
@@ -316,6 +325,8 @@ struct IOFBConnect
     IODisplayModeID		defaultMode;
     IOIndex			defaultDepth;
     IODisplayModeID		default4By3Mode;
+    UInt32			defaultMinWidth;
+    UInt32			defaultMinHeight;
     UInt32			ovrFlags;
     UInt32			mirrorDefaultFlags;
     IODisplayVendorID		displayVendor;
@@ -333,12 +344,16 @@ struct IOFBConnect
     GTFTimingCurve		gtfCurves[2];
     UInt32			numGTFCurves;
     UInt64			transform;
+    uint32_t			supportedComponentDepths;
+    uint32_t			supportedColorModes;
     Boolean			gtfDisplay;
     Boolean			cvtDisplay;
     Boolean			supportsReducedBlank;
     Boolean			hasCEAExt;
     Boolean			hasDIEXT;
     Boolean			hasInterlaced;
+    Boolean			hasHDMI;
+    Boolean			hasShortVideoDescriptors;
     Boolean			suppressRefresh;
     Boolean			detailedRefresh;
     Boolean			useScalerUnderscan;

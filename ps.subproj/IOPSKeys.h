@@ -3,19 +3,20 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * The contents of this file constitute Original Code as defined in and
- * are subject to the Apple Public Source License Version 1.1 (the
- * "License").  You may not use this file except in compliance with the
- * License.  Please obtain a copy of the License at
- * http://www.apple.com/publicsource and read it before using this file.
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
  * 
- * This Original Code and all software distributed under the License are
- * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -30,6 +31,54 @@
  */  
 #ifndef _IOPSKEYS_H_
 #define _IOPSKEYS_H_
+
+/*!
+ @define kIOPSPowerAdapterIDKey
+ @astract This key refers to the attached external AC power adapter's ID.
+        The value associated with this key is a CFNumberRef intger.
+ @discussion This key may be present in the dictionary returned from @link IOPSCopyExternalPowerAdapterDetails @/link
+        This key might not be defined for any given power source.
+ */
+#define kIOPSPowerAdapterIDKey          "AdapterID"
+
+/*!
+ @define kIOPSPowerAdapterWattsKey
+ @astract This key refers to the wattage of the external AC power adapter attached to a portable.
+        The value associated with this key is a CFNumberRef integer value, in units of watts.
+ @discussion This key may be present in the dictionary returned from @link IOPSCopyExternalPowerAdapterDetails @/link
+        This key might not be defined for any given power source.
+ */
+#define kIOPSPowerAdapterWattsKey       "Watts"
+
+/*!
+ @define kIOPSPowerAdapterRevisionKey
+ @abstract The power adapter's revision.
+        The value associated with this key is a CFNumberRef integer value
+ @discussion This key may be present in the dictionary returned from @link IOPSCopyExternalPowerAdapterDetails @/link
+        This key might not be defined for any given power source.
+ */
+#define kIOPSPowerAdapterRevisionKey   "AdapterRevision"
+
+/*!
+ @define kIOPSPowerAdapterSerialNumberKey
+ @abstract The power adapter's serial number.
+        The value associated with this key is a CFNumberRef integer value
+ @discussion This key may be present in the dictionary returned from @link IOPSCopyExternalPowerAdapterDetails @/link
+        This key might not be defined for any given power source.
+ */ 
+#define kIOPSPowerAdapterSerialNumberKey    "SerialNumber"
+
+/*!
+ @define kIOPSPowerAdapterFamilyKey
+ @abstract The power adapter's family code.
+        The value associated with this key is a CFNumberRef integer value
+ @discussion This key may be present in the dictionary returned from @link IOPSCopyExternalPowerAdapterDetails @/link
+        This key might not be defined for any given power source.
+ */
+#define kIOPSPowerAdapterFamilyKey          "FamilyCode"
+
+/*!
+ */
 
 /*!
  @define kIOPSUPSManagementClaimed
@@ -95,11 +144,23 @@
  * These keys specify the values in a dictionary of PowerSource details.
  * Use these keys in conjunction with the dictionary returned by 
  * IOPSGetPowerSourceDescription()
+ * 
+ * Clients of IOPSCreatePowerSourceID() must specify these keys in their power source dictionaries.
+ * Each key is labelled with one of these labels that indicate what information is required to
+ * represent a power source in OS X.
+ *
+ *	<br>Implementing this key is REQUIRED
+ *	<br>Implementing this key is RECOMMENDED
+ *	<br>Implementing this key is OPTIONAL.
+ *	<br>This key is DEPRECATED, do not implement it. 
+ *
  */ 
 
 /*!
     @define kIOPSPowerSourceID
     @abstract CFNumber key uniquely identifying a UPS attached to the system.
+		<br>OS X Power Management will specify this key. 
+		<br>Callers should not set this key; OS X will insert this key.
         <br>Type CFNumber, kCFNumberIntType, uniquely identifying an attached UPS.
 */
 #define kIOPSPowerSourceIDKey          "Power Source ID"
@@ -108,6 +169,8 @@
 /*!
     @define kIOPSPowerSourceStateKey
     @abstract CFDictionary key for the current source of power.
+		<br>Implementing this key is REQUIRED
+    	<br> kIOPSBatteryPowerValue indicates power source is drawing internal power; kIOPSACPowerValue indicates power source is connected to an external power source.
         <br>Type CFString, value is kIOPSACPowerValue, kIOPSBatteryPowerValue, or kIOPSOffLineValue.
 */
 #define kIOPSPowerSourceStateKey       "Power Source State"
@@ -115,21 +178,28 @@
 /*!
     @define kIOPSCurrentCapacityKey
     @abstract CFDictionary key for the current power source's capacity.
-        <br>Type CFNumber (signed integer), units are relative to "Max Capacity"
+		<br>The power source's software may specify the units for this key. The units must be consisent for all capacities reported by this power source.
+		<br>Clients may derive a percentage of power source battery remaining by dividing "Current Capacity" by "Max Capacity"
+		<br>Implementing this key is REQUIRED
+        <br>Type CFNumber (signed integer)
 */
 #define kIOPSCurrentCapacityKey        "Current Capacity"
 
 /*!
     @define kIOPSMaxCapacityKey
     @abstract CFDictionary key for the current power source's maximum or "Full Charge Capacity"
-        <br>Type CFNumber (signed integer), units are %
+		<br>The power source's software may specify the units for this key. The units must be consisent for all capacities reported by this power source.
+		<br>Implementing this key is REQUIRED
+        <br>Type CFNumber (signed integer)
 */
 #define kIOPSMaxCapacityKey            "Max Capacity"
 
 /*!
-    @define kIOPSMaxCapacityKey
+    @define kIOPSDesignCapacityKey
     @abstract CFDictionary key for the current power source's design capacity
-        <br>Type CFNumber (signed integer), units are %
+		<br>The power source's software may specify the units for this key. The units must be consisent for all capacities reported by this power source.
+		<br>Implementing this key is RECOMMENDED
+        <br>Type CFNumber (signed integer)
 */
 #define kIOPSDesignCapacityKey          "DesignCapacity"
 
@@ -139,6 +209,7 @@
         Only valid if the power source is running off its own power. That's when the 
         kIOPSPowerSourceStateKey has value kIOPSBatteryPowerValue, 
         and the value of kIOPSIsChargingKey is kCFBooleanFalse.
+		<br>Implementing this key is RECOMMENDED
         <br>Type CFNumber (signed integer), units are minutes
         <br>A value of -1 indicates "Still Calculating the Time", otherwise estimated minutes left on the battery.
 */
@@ -149,6 +220,7 @@
     @define kIOPSTimeToFullChargeKey
     @abstract CFDictionary key for the current power source's time remaining until empty.
         Only valid if the value of kIOPSIsChargingKey is kCFBooleanTrue.
+		<br>Implementing this key is RECOMMENDED
         <br>Type CFNumber (signed integer), units are minutes
         <br>A value of -1 indicates "Still Calculating the Time", otherwise estimated minutes until fully charged.
 */
@@ -157,6 +229,7 @@
 /*!
     @define kIOPSIsChargingKey
     @abstract CFDictionary key for the current power source's charging state
+		<br>Implementing this key is REQUIRED
         <br>Type CFBoolean - kCFBooleanTrue or kCFBooleanFalse
 */
 #define kIOPSIsChargingKey             "Is Charging"
@@ -167,58 +240,101 @@
     <br>For instance, a PowerBook with the capacity for two batteries but 
         with only one present would show two power source dictionaries, 
         but kIOPSIsPresentKey would have the value kCFBooleanFalse in one of them.
-    <br>Type CFBoolean - kCFBooleanTrue or kCFBooleanFalse
+		<br>Implementing this key is REQUIRED
+		<br>Type CFBoolean - kCFBooleanTrue or kCFBooleanFalse
 */
 #define kIOPSIsPresentKey              "Is Present"
 
 /*!
     @define kIOPSVoltageKey
     @abstract CFDictionary key for the current power source's electrical voltage.
-    <br>Type CFNumber (signed integer) - units are mV
+		<br>Implementing this key is RECOMMENDED
+	    <br>Type CFNumber (signed integer) - units are mV
 */
 #define kIOPSVoltageKey                "Voltage"
 
 /*!
     @define kIOPSCurrentKey
     @abstract CFDictionary key for the current power source's electrical current.
-    <br>Type CFNumber (signed integer) - units are mA
+		<br>Implementing this key is RECOMMENDED
+		<br>Type CFNumber (signed integer) - units are mA
 */
 #define kIOPSCurrentKey                "Current"
 
 /*!
     @define kIOPSNameKey
     @abstract CFDictionary key for the current power source's name.
-    <br>Type CFStringRef
+		<br>Implementing this key is REQUIRED
+		<br>Type CFStringRef
 */
 #define kIOPSNameKey                   "Name"
 
+
+/*!
+    @define kIOPSTypeKey
+    @abstract CFDictionary key for the type of the power source
+		<br>Implementing this key is REQUIRED.
+		<br>Type CFStringRef. Valid transport types are kIOPSUPSType or kIOPSInternalBatteryType.
+*/
+#define kIOPSTypeKey          "Type"
+
+
 /*!
     @define kIOPSTransportTypeKey
-    @abstract CFDictionary key for the current power source's transport type.
-    <br>Type CFStringRef. Valid transport types are kIOPSSerialTransportType, 
-    kIOPSUSBTransportType, kIOPSNetworkTransportType, or kIOPSInternalType.
+    @abstract CFDictionary key for the current power source's data transport type (e.g. the means that the power source conveys power source data to the OS X machine). 
+    kIOPSInternalType describes an internal power source.
+    kIOPSUSBTransportType, kIOPSNetworkTransportType, and kIOPSSerialTransportType usually describe UPS's.
+		<br>Implementing this key is REQUIRED
+		<br>Type CFStringRef. Valid transport types are kIOPSSerialTransportType, 
+		kIOPSUSBTransportType, kIOPSNetworkTransportType, kIOPSInternalType
 */
 #define kIOPSTransportTypeKey          "Transport Type"
 
 /*!
     @define kIOPSVendorDataKey
-    @abstract CFDictionary key for arbitrary vendor data. The value should be a 
-    <br>CFDictionary 
-    kIOPSUSBTransportType, kIOPSNetworkTransportType, or kIOPSInternalType.
+    @abstract CFDictionary key for arbitrary vendor data.
+		<br>Implementing this key is OPTIONAL.
+		<br>CFDictionary; contents determined by the power source software. OS X will not look at this data.
 */
 #define kIOPSVendorDataKey          "Vendor Specific Data"
 
 /*!
     @define kIOPSBatteryHealthKey
-    @abstract CFDictionary key for the current power source's "health" estimate
+    @abstract CFDictionary key for the current power source's "health" estimate.
+    	Health indicates whether a power source is showing signs of aging, or no longer capable of providing its design charge.
+    	<br>Use value kIOPSGoodValue to describe a well-performing power source, kIOPSFairValue to describe a functional power source with limited capacity, and kIOPSPoorValue to describe a power source that's not capable of providing power.
+		<br>Implementing this key is OPTIONAL.
         <br>Type CFStringRef
 */
 #define kIOPSBatteryHealthKey       "BatteryHealth"
 
 /*!
-    @define kIOPSBatteryHealthConfidenceKey
+    @define kIOPSBatteryHealthConditionKey
+	@abstract kIOPSBatteryHealthConditionKey broadly describes the battery's health.
+		<br>Value is one of the "Battery Health Condition" keys described below.
+		<br>Implementing this key is OPTIONAL - the values associated with these keys have values only used by Apple power sources.
+        <br>Type CFStringRef
+*/
+#define kIOPSBatteryHealthConditionKey       "BatteryHealthCondition"
+
+/*!
+    @define kIOPSBatteryFailureModesKey
+    @abstract Enumerates the specific failure modes of the battery. If detectable, various
+        battery failures will be listed here. A battery may suffer from more than one 
+        type of failure simultaneously, as tracked in this array.
+        If BatteryFailureModesKey is not defined (or is set to an empty dictionary), 
+            then the battery has no detectable failures.
+ 		Each entry in the array should be a short descriptive string describing the error.
+		<br>Implementing this key is RECOMMENDED
+	 <br>Type CFArrayRef
+*/
+#define kIOPSBatteryFailureModesKey          "BatteryFailureModes"
+
+/*!
+    @define kIOPSBatteryHealthConfidenceKey    
     @abstract CFDictionary key for our confidence in the accuracy of our 
-        power source's "health" estimate
+        power source's "health" estimate. Power source does not need to define this key.
+		<br>This key is DEPRECATED, do not implement it. 
         <br>Type CFStringRef
 */
 #define kIOPSHealthConfidenceKey    "HealthConfidence"
@@ -227,10 +343,55 @@
 /*!
     @define kIOPSMaxErrKey
     @abstract CFDictionary key for the current power source's percentage error
-        in capacity reporting.
+        in capacity reporting. In internal batteries, this refers to the battery pack's estimated percentage error.
+		<br>Implementing this key is OPTIONAL.
         <br>Type CFNumberRef, non-negative integer
 */
 #define kIOPSMaxErrKey              "MaxErr"
+
+/*!
+    @define kIOPSIsChargedKey
+    @abstract CFDictionary key indicates whether the battery is charged. 
+        A battery must be plugged in to an external power source in order to be fully charged.
+        Note that a battery may validly be plugged in, not charging, and <100% charge.
+        e.g. A battery with capacity >= 95% and not charging, is defined as charged.
+		<br>Implementing this key is RECOMMENDED
+        <br>Type CFBoolean - kCFBooleanTrue or kCFBooleanFalse
+*/
+#define kIOPSIsChargedKey                   "Is Charged"
+
+/*!
+    @define kIOPSIsChargedKey
+    @abstract CFDictionary key indicates whether the battery is charged. 
+        A battery must be plugged in to an external power source in order to be fully charged.
+        Note that a battery may validly be plugged in, not charging, and <100% charge.
+        e.g. A battery with capacity >= 95% and not charging, is defined as charged.
+        <br>Implementing this key is REQUIRED
+        <br>Type CFBoolean - kCFBooleanTrue or kCFBooleanFalse
+*/
+#define kIOPSIsChargedKey                   "Is Charged"
+
+/*!
+    @define kIOPSIsFinishingChargeKey
+    @abstract CFDictionary key indicates whether the battery is finishing off its charge.
+        When this is true, the system UI should indicate that the battery is "Finishing Charge."
+        Some batteries may continue charging after they report 100% capacity.
+		<br>Implementing this key is RECOMMENDED
+        <br>Type CFBoolean - kCFBooleanTrue or kCFBooleanFalse
+*/
+#define kIOPSIsFinishingChargeKey              "Is Finishing Charge"
+
+/*!
+    @define kIOPSHardwareSerialNumberKey
+    @abstract A unique serial number that identifies the power source.
+    @discussion For Apple-manufactured batteries, this is an alphanumeric string generated
+        during the battery manufacturing process.
+	<br>Implementing this key is RECOMMENDED
+	<br>Type CFStringRef
+  */
+#define kIOPSHardwareSerialNumberKey            "Hardware Serial Number"
+
+
 
 /*
  * Transport types
@@ -256,6 +417,23 @@
 */
 #define kIOPSInternalType              "Internal"
 
+
+/*
+ * PS Types
+ * A string that broadly describes the type of power source. One of these strings must be passed
+ * as an argument to IOPSCreatePowerSource() when defining a new system power source.
+ */
+
+/*!
+ * kIOPSInternalBatteryType represents a battery residing inside an Apple computer.
+ */
+#define kIOPSInternalBatteryType	"InternalBattery"
+
+/*!
+ * kIOPSUPSType represents an external attached UPS.
+ */
+#define kIOPSUPSType				"UPS"
+
 /*
  * PS state 
  */
@@ -275,6 +453,8 @@
 */
 #define kIOPSBatteryPowerValue         "Battery Power"
 
+
+
 /*
  * Battery Health & Confidence values
  */
@@ -293,5 +473,99 @@
     @abstract Value for key kIOPSBatteryHealthKey & kIOPMPSHealthConfidenceKey.
 */
 #define kIOPSGoodValue                  "Good"
+
+
+
+/*
+ * Battery Health Condition values
+ */
+/*!
+    @define kIOPSCheckBatteryValue
+    @abstract Value for key kIOPSBatteryHealthConditionKey
+*/
+#define kIOPSCheckBatteryValue                      "Check Battery"
+/*!
+    @define kIOPSPermanentFailureValue
+    @abstract Value for key kIOPSBatteryHealthConditionKey
+*/
+#define kIOPSPermanentFailureValue                  "Permanent Battery Failure"
+
+
+/*
+ * Battery Failure Mode values
+ */
+
+
+/*!
+    @define kIOPSFailureExternalInput
+    @abstract Value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureExternalInput                   "Externally Indicated Failure"
+/*!
+    @define kIOPSFailureSafetyOverVoltage
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureSafetyOverVoltage               "Safety Over-Voltage"
+/*!
+    @define kIOPSFailureChargeOverTemp
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureChargeOverTemp                  "Charge Over-Temperature"
+/*!
+    @define kIOPSFailureDischargeOverTemp
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureDischargeOverTemp               "Discharge Over-Temperature"
+/*!
+    @define kIOPSFailureCellImbalance
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureCellImbalance                   "Cell Imbalance"
+/*!
+    @define kIOPSFailureChargeFET
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureChargeFET                       "Charge FET"
+/*!
+    @define kIOPSFailureDischargeFET
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureDischargeFET                    "Discharge FET"
+/*!
+    @define kIOPSFailureDataFlushFault
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureDataFlushFault                  "Data Flush Fault"
+/*!
+    @define kIOPSFailurePermanentAFEComms
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailurePermanentAFEComms               "Permanent AFE Comms"
+/*!
+    @define kIOPSFailurePeriodicAFEComms
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailurePeriodicAFEComms                "Periodic AFE Comms"
+/*!
+    @define kIOPSFailureChargeOverCurrent
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureChargeOverCurrent               "Charge Over-Current"
+/*!
+    @define kIOPSFailureDischargeOverCurrent
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureDischargeOverCurrent            "Discharge Over-Current"
+/*!
+    @define kIOPSFailureOpenThermistor
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureOpenThermistor                  "Open Thermistor"
+/*!
+    @define kIOPSFailureFuseBlown
+    @abstract Potential value for key kIOPSBatteryFailureModesKey
+*/
+#define kIOPSFailureFuseBlown                       "Fuse Blown"
+
 
 #endif

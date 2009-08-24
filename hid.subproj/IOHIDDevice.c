@@ -1,8 +1,7 @@
 /*
- *
- * @APPLE_LICENSE_HEADER_START@
+ * Copyright (c) 1999-2008 Apple Computer, Inc.  All Rights Reserved.
  * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
+ * @APPLE_LICENSE_HEADER_START@
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -101,6 +100,7 @@ typedef struct __IOHIDDevice
     CFDictionaryRef                 properties;
     IONotificationPortRef           notificationPort;
     io_object_t                     notification;
+    CFTypeRef                       asyncEventSource;
     CFRunLoopRef                    runLoop;
     CFStringRef                     runLoopMode;
     IOHIDCallback                   removalCallback;
@@ -122,7 +122,8 @@ static const CFRuntimeClass __IOHIDDeviceClass = {
     NULL,                   // equal
     NULL,                   // hash
     NULL,                   // copyFormattingDesc
-    NULL
+    NULL,                   // copyDebugDesc
+    NULL                    // reclaim
 };
 
 static pthread_once_t __deviceTypeInit = PTHREAD_ONCE_INIT;
@@ -288,6 +289,16 @@ IOHIDDeviceRef IOHIDDeviceCreate(
 }
 
 //------------------------------------------------------------------------------
+// IOHIDDeviceGetService
+//------------------------------------------------------------------------------
+io_service_t IOHIDDeviceGetService(
+                                IOHIDDeviceRef                  device)
+{
+    return device->service;
+}
+
+
+//------------------------------------------------------------------------------
 // IOHIDDeviceOpen
 //------------------------------------------------------------------------------
 IOReturn IOHIDDeviceOpen(          
@@ -438,7 +449,28 @@ void IOHIDDeviceScheduleWithRunLoop(
 {
     device->runLoop     = runLoop;
     device->runLoopMode = runLoopMode;
-    
+
+
+    if ( !device->asyncEventSource) {
+        IOReturn ret;
+        
+        ret = (*device->deviceInterface)->getAsyncEventSource(
+                                                    device->deviceInterface,
+                                                    &device->asyncEventSource);
+        
+        if (ret != kIOReturnSuccess || !device->asyncEventSource)
+            return;
+    }
+
+    if (CFGetTypeID(device->asyncEventSource) == CFRunLoopSourceGetTypeID())
+        CFRunLoopAddSource( device->runLoop, 
+                            (CFRunLoopSourceRef)device->asyncEventSource, 
+                            device->runLoopMode);
+    else if (CFGetTypeID(device->asyncEventSource) == CFRunLoopTimerGetTypeID())
+        CFRunLoopAddTimer(  device->runLoop, 
+                            (CFRunLoopTimerRef)device->asyncEventSource, 
+                            device->runLoopMode);
+
     if ( device->notificationPort )
         CFRunLoopAddSource(
                 device->runLoop, 
@@ -465,13 +497,27 @@ void IOHIDDeviceUnscheduleFromRunLoop(
                                 CFStringRef                     runLoopMode)
 {
     if ( CFEqual(device->runLoop, runLoop) && 
-            CFEqual(device->runLoopMode, runLoopMode) &&
-                device->notificationPort )
-        CFRunLoopRemoveSource(
+            CFEqual(device->runLoopMode, runLoopMode)) {
+            
+        if ( device->notificationPort ) {        
+            CFRunLoopRemoveSource(
                 device->runLoop, 
                 IONotificationPortGetRunLoopSource(device->notificationPort), 
                 device->runLoopMode);
-
+        }
+        
+        if (device->asyncEventSource) {
+            if (CFGetTypeID(device->asyncEventSource) == CFRunLoopSourceGetTypeID())
+                CFRunLoopRemoveSource( device->runLoop, 
+                                    (CFRunLoopSourceRef)device->asyncEventSource, 
+                                    device->runLoopMode);
+            else if (CFGetTypeID(device->asyncEventSource) == CFRunLoopTimerGetTypeID())
+                CFRunLoopAddTimer(  device->runLoop, 
+                                    (CFRunLoopTimerRef)device->asyncEventSource, 
+                                    device->runLoopMode);
+        
+        }
+    }
 }
 
 //------------------------------------------------------------------------------

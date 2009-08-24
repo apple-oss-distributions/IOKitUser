@@ -3,19 +3,20 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * The contents of this file constitute Original Code as defined in and
- * are subject to the Apple Public Source License Version 1.1 (the
- * "License").  You may not use this file except in compliance with the
- * License.  Please obtain a copy of the License at
- * http://www.apple.com/publicsource and read it before using this file.
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
  * 
- * This Original Code and all software distributed under the License are
- * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -47,107 +48,176 @@
 #define DEBUGPARAMS		0
 
 
+// These values are taken directly from the CEA861 spec.
+// See Tables 3 and 4 of the specification for details.
+typedef struct
+{
+    bool        supported;
+    uint16_t	hActive;
+    uint16_t	vActive;
+    uint16_t	interlaced;
+    uint16_t	hTotal;
+    uint16_t	hBlank;
+    uint16_t	vTotal;
+    uint16_t	vBlank;
+    float	pClk;
+    uint16_t	hFront;
+    uint16_t	hSync;
+    uint16_t	hBack;
+    uint16_t	hPolarity;
+    uint16_t	vFront;
+    uint16_t	vSync;
+    uint16_t	vBack;
+    uint16_t	vPolarity;
+} CEAVideoFormatData;
+
+#define	MAX_CEA861_VIDEO_FORMATS 64
+
+static const CEAVideoFormatData CEAVideoFormats[MAX_CEA861_VIDEO_FORMATS+1] = 
+{
+// 0 - Unused
+{ false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+// 1 - 640x480p
+{ true, 640, 480, 0, 800, 160, 525, 45, 25.175, 16, 96, 48, 0, 10, 2, 33, 0 },
+// 2 - 720x480p
+{ true, 720, 480, 0, 858, 138, 525, 45, 27, 16, 62, 60, 0, 9, 6, 30, 0 },
+// 3 - 720x480p
+{ true, 720, 480, 0, 858, 138, 525, 45, 27, 16, 62, 60, 0, 9, 6, 30, 0 },
+// 4 - 1280x720p
+{ true, 1280, 720, 0, 1650, 370, 750, 30, 74.25, 110, 40, 220, 1, 5, 5, 20, 1 },
+// 5 - 1920x1080i
+{ true, 1920, 1080, 1, 2200, 280, 1125, 22.5, 74.25, 88, 44, 148, 1, 2, 5, 15, 1 },
+// 6 - 720(1440)x480i
+{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
+// 7 - 720(1440)x480i
+{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
+// 8 - 720(1440)x240p
+{ false, 1440, 240, 0, 1716, 276, 262, 22, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
+// 9 - 720(1440)x240p
+{ false, 1440, 240, 0, 1716, 276, 262, 22, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
+// 10 - 2880x480i
+{ false, 2880, 480, 1, 3432, 552, 525, 22.5, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
+// 11 - 2880x480i
+{ false, 2880, 480, 1, 3432, 552, 525, 22.5, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
+// 12 - 2880x240p
+{ false, 2880, 240, 0, 3432, 552, 262, 22, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
+// 13 - 2880x240p
+{ false, 2880, 240, 0, 3432, 552, 262, 22, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
+// 14 - 1440x480p
+{ false, 1440, 480, 0, 1716, 276, 525, 45, 54, 32, 124, 120, 0, 9, 6, 30, 0 },
+// 15 - 1440x480p
+{ false, 1440, 480, 0, 1716, 276, 525, 45, 54, 32, 124, 120, 0, 9, 6, 30, 0 },
+// 16 - 1920x1080p
+{ true, 1920, 1080, 0, 2200, 280, 1125, 45, 148.5, 88, 44, 148, 1, 4, 5, 36, 1 },
+// 17 - 720x576p
+{ true, 720, 576, 0, 864, 144, 625, 49, 27, 12, 64, 68, 0, 5, 5, 39, 0 },
+// 18 - 720x576p
+{ true, 720, 576, 0, 864, 144, 625, 49, 27, 12, 64, 68, 0, 5, 5, 39, 0 },
+// 19 - 1280x720p
+{ true, 1280, 720, 0, 1980, 700, 750, 30, 74.25, 440, 40, 220, 1, 5, 5, 20, 1 },
+// 20 - 1920x1080i
+{ true, 1920, 1080, 1, 2640, 720, 1125, 22.5, 74.25, 528, 44, 148, 1, 2, 5, 15, 1 },
+// 21 - 720(1440)x576i
+{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
+// 22 - 720(1440)x576i
+{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
+// 23 - 720(1440)x288p
+{ false, 1440, 288, 0, 1728, 288, 312, 24, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
+// 24 - 720(1440)x288p
+{ false, 1440, 288, 0, 1728, 288, 312, 24, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
+// 25 - 2880x576i
+{ false, 2880, 576, 1, 3456, 576, 625, 24.5, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
+// 26 - 2880x576i
+{ false, 2880, 576, 1, 3456, 576, 625, 24.5, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
+// 27 - 2880x288p
+{ false, 2880, 288, 0, 3456, 576, 312, 24, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
+// 28 - 2880x288p
+{ false, 2880, 288, 0, 3456, 576, 312, 24, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
+// 29 - 1440x576p
+{ false, 1440, 576, 0, 1728, 288, 625, 49, 54, 24, 128, 136, 0, 5, 5, 39, 0 },
+// 30 - 1440x576p
+{ false, 1440, 576, 0, 1728, 288, 625, 49, 54, 24, 128, 136, 0, 5, 5, 39, 0 },
+// 31 - 1920x1080p
+{ true, 1920, 1080, 0, 2640, 720, 1125, 45, 148.5, 528, 44, 148, 1, 4, 5, 36, 1 },
+// 32 - 1920x1080p
+{ true, 1920, 1080, 0, 2750, 830, 1125, 45, 74.25, 638, 44, 148, 1, 4, 5, 36, 1 },
+// 33 - 1920x1080p
+{ true, 1920, 1080, 0, 2640, 720, 1125, 45, 74.25, 528, 44, 148, 1, 4, 5, 36, 1 },
+// 34 - 1920x1080p
+{ true, 1920, 1080, 0, 2200, 280, 1125, 45, 74.25, 88, 44, 148, 1, 4, 5, 36, 1 },
+// 35 - 2880x480p
+{ false, 2880, 480, 0, 3432, 552, 525, 45, 108, 64, 248, 240, 0, 9, 6, 30, 0 },
+// 36 - 2880x480p
+{ false, 2880, 480, 0, 3432, 552, 525, 45, 108, 64, 248, 240, 0, 9, 6, 30, 0 },
+// 37 - 2880x576p
+{ false, 2880, 576, 0, 3456, 576, 625, 49, 108, 48, 256, 272, 0, 5, 5, 39, 0 },
+// 38 - 2880x576p
+{ false, 2880, 576, 0, 3456, 576, 625, 49, 108, 48, 256, 272, 0, 5, 5, 39, 0 },
+// 39 - 1920x1080i
+{ true, 1920, 1080, 1, 2304, 384, 1250, 85, 72, 32, 168, 184, 1, 23, 5, 57, 0 },
+// 40 - 1920x1080i
+{ true, 1920, 1080, 1, 2640, 720, 1125, 22.5, 148.5, 528, 44, 148, 1, 2, 5, 15, 1 },
+// 41 - 1280x720p
+{ true, 1280, 720, 0, 1980, 700, 750, 30, 148.5, 440, 40, 220, 1, 5, 5, 20, 1 },
+// 42 - 720x576
+{ true, 720, 576, 0, 864, 144, 625, 49, 54, 12, 64, 68, 0, 5, 5, 39, 0 },
+// 43 - 720x576p
+{ true, 720, 576, 0, 864, 144, 625, 49, 54, 12, 64, 68, 0, 5, 5, 39, 0 },
+// 44 - 720(1440)x576i
+{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 54.0, 24, 12, 138, 0, 2, 3, 19, 0 },
+// 45 - 720(1440)x576i
+{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 54.0, 24, 6, 138, 0, 2, 3, 19, 0 },
+// 46 - 1920x1080i
+{ true, 1920, 1080, 1, 2200, 280, 1125, 22.5, 148.5, 88, 44, 148, 1, 2, 5, 15, 1 },
+// 47 - 1280x720p
+{ true, 1280, 720, 0, 1650, 370, 750, 30, 148.5, 110, 40, 220, 1, 5, 5, 20, 1 },
+// 48 - 720x480p
+{ true, 720, 480, 0, 858, 138, 525, 45, 54.0, 16, 62, 60, 0, 9, 6, 30, 0 },
+// 49 - 720x480p
+{ true, 720, 480, 0, 858, 138, 525, 45, 54.0, 16, 62, 60, 0, 9, 6, 30, 0 },
+// 50 - 720(1440)x480i
+{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 54.0, 38, 12, 114, 0, 4, 3, 15, 0 },
+// 51 - 720(1440)x480i
+{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 54.0, 38, 4, 114, 0, 4, 3, 15, 0 },
+// 52 - 720x576p
+{ true, 720, 576, 0, 864, 144, 625, 49, 108.0, 12, 64, 68, 0, 5, 5, 39, 0 },
+// 53 - 720x576p
+{ true, 720, 576, 0, 864, 144, 625, 49, 108.0, 12, 64, 68, 0, 5, 5, 39, 0 },
+// 54 - 720(1440)x576i
+{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 108.0, 24, 12, 138, 0, 2, 3, 19, 0 },
+// 55 - 720(1440)x576i
+{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 108.0, 24, 6, 138, 0, 2, 3, 19, 0 },
+// 56 - 720x480p
+{ true, 720, 480, 0, 858, 138, 525, 45, 108.108, 16, 62, 60, 0, 9, 6, 30, 0 },
+// 57 - 720x480p
+{ true, 720, 480, 0, 858, 138, 525, 45, 108.108, 16, 62, 60, 0, 9, 6, 30, 0 },
+// 58 - 720(1440)x480i
+{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 108.108, 38, 12, 114, 0, 4, 3, 15, 0 },
+// 59 - 720(1440)x480i
+{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 108.108, 38, 4, 114, 0, 4, 3, 15, 0 },
+// 60 - 1280x720p
+{ true, 1280, 720, 0, 4125, 2845, 750, 30, 74.25, 2585, 40, 220, 1, 5, 5, 20, 1 },
+// 61 - 1280x720p
+{ true, 1280, 720, 0, 3960, 2680, 750, 30, 74.25, 2420, 40, 220, 1, 5, 5, 20, 1 },
+// 62 - 1280x720p
+{ true, 1280, 720, 0, 3300, 2020, 750, 30, 74.25, 1760, 40, 220, 1, 5, 5, 20, 1 },
+// 63 - 1920x1080p
+{ true, 1920, 1080, 0, 2200, 280, 1125, 45, 297.0, 88, 44, 148, 1, 4, 5, 36, 1 },
+// 64 - 1920x1080p
+{ true, 1920, 1080, 0, 2640, 720, 1125, 45, 297.0, 528, 44, 148, 1, 4, 5, 36, 1 }
+};
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-Boolean _IOReadBytesFromFile(CFAllocatorRef alloc, const char *path, void **bytes,
-				CFIndex *length, CFIndex maxLength);
-Boolean _IOWriteBytesToFile(const char *path, const void *bytes, CFIndex length);
-
 __private_extern__ IOReturn
-readFile(const char *path, vm_address_t * objAddr, vm_size_t * objSize)
-{
-    int fd;
-    int err;
-    struct stat stat_buf;
-
-    *objAddr = 0;
-    *objSize = 0;
-
-    if((fd = open(path, O_RDONLY)) == -1)
-	return errno;
-
-    do {
-	if(fstat(fd, &stat_buf) == -1) {
-	    err = errno;
-	    continue;
-	}
-        if (0 == (stat_buf.st_mode & S_IFREG)) 
-        {
-            *objAddr = 0;
-            *objSize = 0;
-            err = kIOReturnNotReadable;
-            continue;
-        }
-	*objSize = stat_buf.st_size;
-
-	*objAddr = (vm_address_t) mmap(NULL, round_page(stat_buf.st_size), PROT_READ, MAP_FILE|MAP_PRIVATE, fd, 0);
-	if(!*objAddr) {
-            *objSize = 0;
-	    err = errno;
-	    continue;
-	}
-
-	err = kIOReturnSuccess;
-
-    } while( false );
-
-    close(fd);
-
-    return( err );
-}
-
+readFile(const char *path, vm_address_t * objAddr, vm_size_t * objSize);
 __private_extern__ CFMutableDictionaryRef
-readPlist( const char * path, UInt32 key )
-{
-    IOReturn			err;
-    vm_offset_t 		bytes;
-    vm_size_t			byteLen;
-    CFDataRef			data;
-    CFMutableDictionaryRef	obj = 0;
-
-    err = readFile( path, &bytes, &byteLen );
-
-    if( kIOReturnSuccess != err) 
-	return (0);
-    
-    data = CFDataCreateWithBytesNoCopy( kCFAllocatorDefault,
-				(const UInt8 *) bytes, byteLen, kCFAllocatorNull );
-    if( data) {
-	obj = (CFMutableDictionaryRef) CFPropertyListCreateFromXMLData( kCFAllocatorDefault, data,
-					    kCFPropertyListMutableContainers,
-					    (CFStringRef *) NULL );
-	CFRelease( data );
-    }
-    vm_deallocate( mach_task_self(), bytes, byteLen );
-
-    return (obj);
-}
-
+readPlist( const char * path, UInt32 key );
 __private_extern__ Boolean
-writePlist( const char * path, CFMutableDictionaryRef dict, UInt32 key __unused )
-{
-    Boolean   result = false;
-    CFDataRef data;
-    CFIndex   length;
-    int       fd = -1;
+writePlist( const char * path, CFMutableDictionaryRef dict, UInt32 key __unused );
 
-    data = CFPropertyListCreateXMLData(kCFAllocatorDefault, dict);
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-    if (data)
-    {
-	fd = open(path, O_WRONLY|O_CREAT|O_TRUNC, (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH));
-	result = (fd >= 0);
-	if (result)
-	{
-	    if ((length = CFDataGetLength(data)))
-		result = (length == write(fd, CFDataGetBytePtr(data), length));
-	    close(fd);
-	}
-	CFRelease(data);
-    }
-
-    return (result);
-}
 
 static CFMutableDictionaryRef
 IODisplayCreateOverrides( IOOptionBits options, 
@@ -527,11 +597,14 @@ EDIDDescToDisplayTimingRangeRec( EDID * edid, EDIDGeneralDesc * desc,
     MaxTimingRangeRec( range );
 
     byte = edid->displayParams[0];
-    range->supportedSignalLevels  = 1 << ((byte >> 5) & 3);
-    range->supportedSyncFlags	  = ((byte & 1) ? kIORangeSupportsVSyncSerration : 0)
-                                  | ((byte & 2) ? kIORangeSupportsSyncOnGreen : 0)
-                                  | ((byte & 4) ? kIORangeSupportsCompositeSync : 0)
-                                  | ((byte & 8) ? kIORangeSupportsVSyncSerration : 0);
+    if (!(0x80 & byte))
+    {
+	range->supportedSignalLevels  = 1 << ((byte >> 5) & 3);
+	range->supportedSyncFlags     = ((byte & 1) ? kIORangeSupportsVSyncSerration : 0)
+				      | ((byte & 2) ? kIORangeSupportsSyncOnGreen : 0)
+				      | ((byte & 4) ? kIORangeSupportsCompositeSync : 0)
+				      | ((byte & 8) ? kIORangeSupportsSeparateSyncs : 0);
+    }
 
     range->supportedSignalConfigs = kIORangeSupportsInterlacedCEATiming;
 
@@ -699,6 +772,49 @@ TimingToHost( const IODetailedTimingInformationV2 * _t1, IODetailedTimingInforma
     t2->horizontalSyncLevel 	 = OSReadBigInt32(&t1->horizontalSyncLevel, 0);
     t2->verticalSyncConfig 	 = OSReadBigInt32(&t1->verticalSyncConfig, 0);
     t2->verticalSyncLevel 	 = OSReadBigInt32(&t1->verticalSyncLevel, 0);
+}
+
+static IOReturn
+CEAVideoFormatToDetailedTiming( int videoCode, IODetailedTimingInformation * timing )
+{
+    bzero( timing, sizeof( IODetailedTimingInformation) );
+
+    if( !videoCode || (videoCode > MAX_CEA861_VIDEO_FORMATS) )
+        return( kIOReturnBadArgument );
+
+    const CEAVideoFormatData * mode = &CEAVideoFormats[videoCode];
+
+    if( !mode->supported )
+	return( kIOReturnUnsupported );
+		
+    timing->pixelClock		= (UInt64) (mode->pClk * 1000000.0);
+    timing->maxPixelClock 	= timing->pixelClock;
+    timing->minPixelClock 	= timing->pixelClock;
+
+    timing->horizontalActive	= mode->hActive;
+    timing->verticalActive 	= mode->vActive;
+
+    timing->horizontalBlanking	= mode->hBlank;
+    timing->verticalBlanking  	= mode->vTotal - mode->vActive;
+
+    timing->horizontalSyncOffset	= mode->hFront;
+    timing->horizontalSyncPulseWidth	= mode->hSync;
+    timing->horizontalSyncConfig	= mode->hPolarity ? kIOSyncPositivePolarity : 0;
+
+    if( mode->interlaced )
+    {
+	timing->verticalSyncOffset	= mode->vFront << 1;
+	timing->verticalSyncPulseWidth	= mode->vSync << 1;
+	timing->signalConfig		|= kIOInterlacedCEATiming;
+    }
+    else
+    {
+	timing->verticalSyncOffset	= mode->vFront;
+	timing->verticalSyncPulseWidth	= mode->vSync;
+    }
+    timing->verticalSyncConfig		= mode->vPolarity ? kIOSyncPositivePolarity : 0;
+	
+    return( kIOReturnSuccess );
 }
 
 static IOReturn
@@ -1046,17 +1162,17 @@ IOFBLogRange(IOFBConnectRef connectRef, const IODisplayTimingRange * range)
     fprintf(connectRef->logfile, "  minPixelClock                 %qd\n", range->minPixelClock);
     fprintf(connectRef->logfile, "  maxPixelClock                 %qd\n", range->maxPixelClock);
     
-    fprintf(connectRef->logfile, "  maxPixelError                 %ld\n", range->maxPixelError);
-    fprintf(connectRef->logfile, "  supportedSyncFlags            %lx\n", range->supportedSyncFlags);
-    fprintf(connectRef->logfile, "  supportedSignalLevels         %lx\n", range->supportedSignalLevels);
-    fprintf(connectRef->logfile, "  supportedSignalConfigs        %lx\n", range->supportedSignalConfigs);
-    fprintf(connectRef->logfile, "  minFrameRate                  %ld\n", range->minFrameRate);
-    fprintf(connectRef->logfile, "  maxFrameRate                  %ld\n", range->maxFrameRate);
-    fprintf(connectRef->logfile, "  minLineRate                   %ld\n", range->minLineRate);
-    fprintf(connectRef->logfile, "  maxLineRate                   %ld\n", range->maxLineRate);
+    fprintf(connectRef->logfile, "  maxPixelError                 %d\n", (int) range->maxPixelError);
+    fprintf(connectRef->logfile, "  supportedSyncFlags            %x\n", (int) range->supportedSyncFlags);
+    fprintf(connectRef->logfile, "  supportedSignalLevels         %x\n", (int) range->supportedSignalLevels);
+    fprintf(connectRef->logfile, "  supportedSignalConfigs        %x\n", (int) range->supportedSignalConfigs);
+    fprintf(connectRef->logfile, "  minFrameRate                  %d\n", (int) range->minFrameRate);
+    fprintf(connectRef->logfile, "  maxFrameRate                  %d\n", (int) range->maxFrameRate);
+    fprintf(connectRef->logfile, "  minLineRate                   %d\n", (int) range->minLineRate);
+    fprintf(connectRef->logfile, "  maxLineRate                   %d\n", (int) range->maxLineRate);
 
-    fprintf(connectRef->logfile, "  maxHorizontalTotal            %ld\n", range->maxHorizontalTotal);
-    fprintf(connectRef->logfile, "  maxVerticalTotal              %ld\n", range->maxVerticalTotal);
+    fprintf(connectRef->logfile, "  maxHorizontalTotal            %d\n", (int) range->maxHorizontalTotal);
+    fprintf(connectRef->logfile, "  maxVerticalTotal              %d\n", (int) range->maxVerticalTotal);
     fprintf(connectRef->logfile, "  charSizeHorizontalActive      %d\n", range->charSizeHorizontalActive);
     fprintf(connectRef->logfile, "  charSizeHorizontalBlanking    %d\n", range->charSizeHorizontalBlanking);
     fprintf(connectRef->logfile, "  charSizeHorizontalSyncOffset  %d\n", range->charSizeHorizontalSyncOffset);
@@ -1072,40 +1188,40 @@ IOFBLogRange(IOFBConnectRef connectRef, const IODisplayTimingRange * range)
     fprintf(connectRef->logfile, "  charSizeHorizontalTotal       %d\n", range->charSizeHorizontalTotal);
     fprintf(connectRef->logfile, "  charSizeVerticalTotal         %d\n", range->charSizeVerticalTotal);
 
-    fprintf(connectRef->logfile, "  minHorizontalActiveClocks     %ld\n", range->minHorizontalActiveClocks);
-    fprintf(connectRef->logfile, "  maxHorizontalActiveClocks     %ld\n", range->maxHorizontalActiveClocks);
-    fprintf(connectRef->logfile, "  minHorizontalBlankingClocks   %ld\n", range->minHorizontalBlankingClocks);
-    fprintf(connectRef->logfile, "  maxHorizontalBlankingClocks   %ld\n", range->maxHorizontalBlankingClocks);
-    fprintf(connectRef->logfile, "  minHorizontalSyncOffsetClocks %ld\n", range->minHorizontalSyncOffsetClocks);
-    fprintf(connectRef->logfile, "  maxHorizontalSyncOffsetClocks %ld\n", range->maxHorizontalSyncOffsetClocks);
-    fprintf(connectRef->logfile, "  minHorizontalPulseWidthClocks %ld\n", range->minHorizontalPulseWidthClocks);
-    fprintf(connectRef->logfile, "  maxHorizontalPulseWidthClocks %ld\n", range->maxHorizontalPulseWidthClocks);
+    fprintf(connectRef->logfile, "  minHorizontalActiveClocks     %d\n", (int) range->minHorizontalActiveClocks);
+    fprintf(connectRef->logfile, "  maxHorizontalActiveClocks     %d\n", (int) range->maxHorizontalActiveClocks);
+    fprintf(connectRef->logfile, "  minHorizontalBlankingClocks   %d\n", (int) range->minHorizontalBlankingClocks);
+    fprintf(connectRef->logfile, "  maxHorizontalBlankingClocks   %d\n", (int) range->maxHorizontalBlankingClocks);
+    fprintf(connectRef->logfile, "  minHorizontalSyncOffsetClocks %d\n", (int) range->minHorizontalSyncOffsetClocks);
+    fprintf(connectRef->logfile, "  maxHorizontalSyncOffsetClocks %d\n", (int) range->maxHorizontalSyncOffsetClocks);
+    fprintf(connectRef->logfile, "  minHorizontalPulseWidthClocks %d\n", (int) range->minHorizontalPulseWidthClocks);
+    fprintf(connectRef->logfile, "  maxHorizontalPulseWidthClocks %d\n", (int) range->maxHorizontalPulseWidthClocks);
 
-    fprintf(connectRef->logfile, "  minVerticalActiveClocks       %ld\n", range->minVerticalActiveClocks);
-    fprintf(connectRef->logfile, "  maxVerticalActiveClocks       %ld\n", range->maxVerticalActiveClocks);
-    fprintf(connectRef->logfile, "  minVerticalBlankingClocks     %ld\n", range->minVerticalBlankingClocks);
-    fprintf(connectRef->logfile, "  maxVerticalBlankingClocks     %ld\n", range->maxVerticalBlankingClocks);
+    fprintf(connectRef->logfile, "  minVerticalActiveClocks       %d\n", (int) range->minVerticalActiveClocks);
+    fprintf(connectRef->logfile, "  maxVerticalActiveClocks       %d\n", (int) range->maxVerticalActiveClocks);
+    fprintf(connectRef->logfile, "  minVerticalBlankingClocks     %d\n", (int) range->minVerticalBlankingClocks);
+    fprintf(connectRef->logfile, "  maxVerticalBlankingClocks     %d\n", (int) range->maxVerticalBlankingClocks);
 
-    fprintf(connectRef->logfile, "  minVerticalSyncOffsetClocks   %ld\n", range->minVerticalSyncOffsetClocks);
-    fprintf(connectRef->logfile, "  maxVerticalSyncOffsetClocks   %ld\n", range->maxVerticalSyncOffsetClocks);
-    fprintf(connectRef->logfile, "  minVerticalPulseWidthClocks   %ld\n", range->minVerticalPulseWidthClocks);
-    fprintf(connectRef->logfile, "  maxVerticalPulseWidthClocks   %ld\n", range->maxVerticalPulseWidthClocks);
+    fprintf(connectRef->logfile, "  minVerticalSyncOffsetClocks   %d\n", (int) range->minVerticalSyncOffsetClocks);
+    fprintf(connectRef->logfile, "  maxVerticalSyncOffsetClocks   %d\n", (int) range->maxVerticalSyncOffsetClocks);
+    fprintf(connectRef->logfile, "  minVerticalPulseWidthClocks   %d\n", (int) range->minVerticalPulseWidthClocks);
+    fprintf(connectRef->logfile, "  maxVerticalPulseWidthClocks   %d\n", (int) range->maxVerticalPulseWidthClocks);
 
-    fprintf(connectRef->logfile, "  minHorizontalBorderLeft       %ld\n", range->minHorizontalBorderLeft);
-    fprintf(connectRef->logfile, "  maxHorizontalBorderLeft       %ld\n", range->maxHorizontalBorderLeft);
-    fprintf(connectRef->logfile, "  minHorizontalBorderRight      %ld\n", range->minHorizontalBorderRight);
-    fprintf(connectRef->logfile, "  maxHorizontalBorderRight      %ld\n", range->maxHorizontalBorderRight);
+    fprintf(connectRef->logfile, "  minHorizontalBorderLeft       %d\n", (int) range->minHorizontalBorderLeft);
+    fprintf(connectRef->logfile, "  maxHorizontalBorderLeft       %d\n", (int) range->maxHorizontalBorderLeft);
+    fprintf(connectRef->logfile, "  minHorizontalBorderRight      %d\n", (int) range->minHorizontalBorderRight);
+    fprintf(connectRef->logfile, "  maxHorizontalBorderRight      %d\n", (int) range->maxHorizontalBorderRight);
 
-    fprintf(connectRef->logfile, "  minVerticalBorderTop          %ld\n", range->minVerticalBorderTop);
-    fprintf(connectRef->logfile, "  maxVerticalBorderTop          %ld\n", range->maxVerticalBorderTop);
-    fprintf(connectRef->logfile, "  minVerticalBorderBottom       %ld\n", range->minVerticalBorderBottom);
-    fprintf(connectRef->logfile, "  maxVerticalBorderBottom       %ld\n", range->maxVerticalBorderBottom);
+    fprintf(connectRef->logfile, "  minVerticalBorderTop          %d\n", (int) range->minVerticalBorderTop);
+    fprintf(connectRef->logfile, "  maxVerticalBorderTop          %d\n", (int) range->maxVerticalBorderTop);
+    fprintf(connectRef->logfile, "  minVerticalBorderBottom       %d\n", (int) range->minVerticalBorderBottom);
+    fprintf(connectRef->logfile, "  maxVerticalBorderBottom       %d\n", (int) range->maxVerticalBorderBottom);
 
-    fprintf(connectRef->logfile, "  maxNumLinks                   %ld\n", range->maxNumLinks);
-    fprintf(connectRef->logfile, "  minLink0PixelClock            %ld\n", range->minLink0PixelClock);
-    fprintf(connectRef->logfile, "  maxLink0PixelClock            %ld\n", range->maxLink0PixelClock);
-    fprintf(connectRef->logfile, "  minLink1PixelClock            %ld\n", range->minLink1PixelClock);
-    fprintf(connectRef->logfile, "  maxLink1PixelClock            %ld\n", range->maxLink1PixelClock);
+    fprintf(connectRef->logfile, "  maxNumLinks                   %d\n", (int) range->maxNumLinks);
+    fprintf(connectRef->logfile, "  minLink0PixelClock            %d\n", (int) range->minLink0PixelClock);
+    fprintf(connectRef->logfile, "  maxLink0PixelClock            %d\n", (int) range->maxLink0PixelClock);
+    fprintf(connectRef->logfile, "  minLink1PixelClock            %d\n", (int) range->minLink1PixelClock);
+    fprintf(connectRef->logfile, "  maxLink1PixelClock            %d\n", (int) range->maxLink1PixelClock);
 
     fflush(connectRef->logfile);
 }
@@ -1119,27 +1235,27 @@ IOFBLogTiming(IOFBConnectRef connectRef, const IOTimingInformation * timing)
     fprintf(connectRef->logfile, "  pixelClock                    %qd\n", timing->detailedInfo.v2.pixelClock);
     fprintf(connectRef->logfile, "  minPixelClock                 %qd\n", timing->detailedInfo.v2.minPixelClock);
     fprintf(connectRef->logfile, "  maxPixelClock                 %qd\n", timing->detailedInfo.v2.maxPixelClock);
-    fprintf(connectRef->logfile, "  signalConfig                  %lx\n", timing->detailedInfo.v2.signalConfig);
-    fprintf(connectRef->logfile, "  signalLevels                  %lx\n", timing->detailedInfo.v2.signalLevels);
-    fprintf(connectRef->logfile, "  horizontalActive              %ld\n", timing->detailedInfo.v2.horizontalActive);
-    fprintf(connectRef->logfile, "  horizontalBlanking            %ld\n", timing->detailedInfo.v2.horizontalBlanking);
-    fprintf(connectRef->logfile, "  horizontalSyncOffset          %ld\n", timing->detailedInfo.v2.horizontalSyncOffset);
-    fprintf(connectRef->logfile, "  horizontalSyncPulseWidth      %ld\n", timing->detailedInfo.v2.horizontalSyncPulseWidth);
-    fprintf(connectRef->logfile, "  verticalActive                %ld\n", timing->detailedInfo.v2.verticalActive);
-    fprintf(connectRef->logfile, "  verticalBlanking              %ld\n", timing->detailedInfo.v2.verticalBlanking);
-    fprintf(connectRef->logfile, "  verticalSyncOffset            %ld\n", timing->detailedInfo.v2.verticalSyncOffset);
-    fprintf(connectRef->logfile, "  verticalSyncPulseWidth        %ld\n", timing->detailedInfo.v2.verticalSyncPulseWidth);
-    fprintf(connectRef->logfile, "  horizontalSyncConfig          %ld\n", timing->detailedInfo.v2.horizontalSyncConfig);
-    fprintf(connectRef->logfile, "  horizontalSyncLevel           %ld\n", timing->detailedInfo.v2.horizontalSyncLevel);
-    fprintf(connectRef->logfile, "  verticalSyncConfig            %ld\n", timing->detailedInfo.v2.verticalSyncConfig);
-    fprintf(connectRef->logfile, "  verticalSyncLevel             %ld\n", timing->detailedInfo.v2.verticalSyncLevel);
-    fprintf(connectRef->logfile, "  numLinks                      %ld\n", timing->detailedInfo.v2.numLinks);
+    fprintf(connectRef->logfile, "  signalConfig                  %x\n", (int) timing->detailedInfo.v2.signalConfig);
+    fprintf(connectRef->logfile, "  signalLevels                  %x\n", (int) timing->detailedInfo.v2.signalLevels);
+    fprintf(connectRef->logfile, "  horizontalActive              %d\n", (int) timing->detailedInfo.v2.horizontalActive);
+    fprintf(connectRef->logfile, "  horizontalBlanking            %d\n", (int) timing->detailedInfo.v2.horizontalBlanking);
+    fprintf(connectRef->logfile, "  horizontalSyncOffset          %d\n", (int) timing->detailedInfo.v2.horizontalSyncOffset);
+    fprintf(connectRef->logfile, "  horizontalSyncPulseWidth      %d\n", (int) timing->detailedInfo.v2.horizontalSyncPulseWidth);
+    fprintf(connectRef->logfile, "  verticalActive                %d\n", (int) timing->detailedInfo.v2.verticalActive);
+    fprintf(connectRef->logfile, "  verticalBlanking              %d\n", (int) timing->detailedInfo.v2.verticalBlanking);
+    fprintf(connectRef->logfile, "  verticalSyncOffset            %d\n", (int) timing->detailedInfo.v2.verticalSyncOffset);
+    fprintf(connectRef->logfile, "  verticalSyncPulseWidth        %d\n", (int) timing->detailedInfo.v2.verticalSyncPulseWidth);
+    fprintf(connectRef->logfile, "  horizontalSyncConfig          %d\n", (int) timing->detailedInfo.v2.horizontalSyncConfig);
+    fprintf(connectRef->logfile, "  horizontalSyncLevel           %d\n", (int) timing->detailedInfo.v2.horizontalSyncLevel);
+    fprintf(connectRef->logfile, "  verticalSyncConfig            %d\n", (int) timing->detailedInfo.v2.verticalSyncConfig);
+    fprintf(connectRef->logfile, "  verticalSyncLevel             %d\n", (int) timing->detailedInfo.v2.verticalSyncLevel);
+    fprintf(connectRef->logfile, "  numLinks                      %d\n", (int) timing->detailedInfo.v2.numLinks);
 
-    fprintf(connectRef->logfile, "  scalerFlags                   %lx\n", timing->detailedInfo.v2.scalerFlags);
-    fprintf(connectRef->logfile, "  horizontalScaled              %ld\n", timing->detailedInfo.v2.horizontalScaled);
-    fprintf(connectRef->logfile, "  verticalScaled                %ld\n", timing->detailedInfo.v2.verticalScaled);
-    fprintf(connectRef->logfile, "  horizontalScaledInset         %ld\n", timing->detailedInfo.v2.horizontalScaledInset);
-    fprintf(connectRef->logfile, "  verticalScaledInset           %ld\n", timing->detailedInfo.v2.verticalScaledInset);
+    fprintf(connectRef->logfile, "  scalerFlags                   %x\n", (int) timing->detailedInfo.v2.scalerFlags);
+    fprintf(connectRef->logfile, "  horizontalScaled              %d\n", (int) timing->detailedInfo.v2.horizontalScaled);
+    fprintf(connectRef->logfile, "  verticalScaled                %d\n", (int) timing->detailedInfo.v2.verticalScaled);
+    fprintf(connectRef->logfile, "  horizontalScaledInset         %d\n", (int) timing->detailedInfo.v2.horizontalScaledInset);
+    fprintf(connectRef->logfile, "  verticalScaledInset           %d\n", (int) timing->detailedInfo.v2.verticalScaledInset);
 
     fflush(connectRef->logfile);
 }
@@ -1353,9 +1469,9 @@ IOCheckTimingWithDisplay( IOFBConnectRef connectRef,
 	    if ((diag = CheckTimingWithRange(connectRef, connectRef->fbRange, &timing->detailedInfo.v2)))
 	    {
 #if RLOG
-		DEBG(connectRef, "out of cards range(%d) %ld x %ld\n", diag,
-				timing->detailedInfo.v2.horizontalActive, 
-				timing->detailedInfo.v2.verticalActive );
+		DEBG(connectRef, "out of cards range(%d) %d x %d\n", diag,
+				(int) timing->detailedInfo.v2.horizontalActive, 
+				(int) timing->detailedInfo.v2.verticalActive );
 		IOFBLogTiming(connectRef, timing);
 #endif
 		result = kIOReturnUnsupportedMode;
@@ -1523,12 +1639,46 @@ InstallTiming( IOFBConnectRef                connectRef,
 #if RLOG
     if (timing->detailedInfo.v2.signalConfig & kIOInterlacedCEATiming)
     {
-	DEBG(connectRef, "interlaced: %lx\n", modeGenFlags);
+	DEBG(connectRef, "interlaced: %x\n", (int) modeGenFlags);
 	IOFBLogTiming(connectRef, timing);
     }
 #endif
 
     return( err );
+}
+
+static kern_return_t
+InstallFromCEAShortVideoDesc( IOFBConnectRef connectRef, UInt8 * data )
+{
+    int length = (data[0] & 0x1f);
+    int offset = 1;
+    IOOptionBits flags;
+
+    IOFBDisplayModeDescription modeDesc;
+    IOTimingInformation	* timing = &modeDesc.timingInfo;
+
+    bzero( &modeDesc, sizeof( modeDesc ));
+    timing->flags = kIODetailedTimingValid;
+
+    IOReturn err = kIOReturnSuccess;
+
+    while (offset < (length + 1))
+    {
+	err = CEAVideoFormatToDetailedTiming( (data[offset] & 0x7F), (IODetailedTimingInformation *) &timing->detailedInfo.v2 );
+	if (kIOReturnSuccess == err)
+	{
+	    flags = kDisplayModeValidFlag | kDisplayModeSafeFlag;
+	    if(false && connectRef->hasHDMI && (data[offset] & 0x80))
+		flags |= kDisplayModeDefaultFlag;
+    
+	    err = InstallTiming( connectRef, &modeDesc, flags, kIOFBEDIDDetailedMode );
+	    if (kIOReturnSuccess == err)
+		connectRef->hasShortVideoDescriptors = true;
+	}
+	offset++;
+    }
+
+    return err;
 }
 
 static kern_return_t
@@ -1622,7 +1772,7 @@ InstallFromEDIDDesc( IOFBConnectRef connectRef,
 	timing->detailedInfo.v2.horizontalScaled = timing->detailedInfo.v2.horizontalActive >> 1;
 	timing->detailedInfo.v2.verticalScaled   = timing->detailedInfo.v2.verticalActive;
 #if RLOG
-	DEBG(connectRef, "pixel rep: %ld\n", pixelRep);
+	DEBG(connectRef, "pixel rep: %d\n", (int) pixelRep);
 	IOFBLogTiming(connectRef, timing);
 #endif
     }
@@ -1675,10 +1825,11 @@ InstallTimingForResolution( IOFBConnectRef connectRef, EDID * edid,
 			    IOFBResolutionSpec * spec,
 			    IOOptionBits dmFlags, IOOptionBits modeGenFlags )
 {
-    IOReturn		err;
-    CFNumberRef		num;
+    IOReturn		       err;
+    CFNumberRef		       num;
     IOFBDisplayModeDescription modeDesc;
     IOTimingInformation	*      timing = &modeDesc.timingInfo;
+    bool 		       isDigital;
 
     bzero( &modeDesc, sizeof( modeDesc ));
     timing->flags = kIODetailedTimingValid;
@@ -1687,17 +1838,20 @@ InstallTimingForResolution( IOFBConnectRef connectRef, EDID * edid,
     {
 	err = StandardResolutionToDetailedTiming( connectRef, edid, spec, timing );
 
-	DEBG(connectRef, "%s std-mode for %ldx%ld@%ld, id %ld, genFlags 0x%lx\n", 
+	DEBG(connectRef, "%s std-mode for %dx%d@%d, id %d, genFlags 0x%x\n", 
 		(kIOReturnSuccess == err) ? "Have" : "No",
-		spec->width, spec->height, (UInt32)(spec->refreshRate + 0.5),
-		timing->appleTimingID, modeGenFlags);
+		(int) spec->width, (int) spec->height, (int)(spec->refreshRate + 0.5),
+		(int) timing->appleTimingID, (int) modeGenFlags);
+
+	isDigital = (connectRef->overrides 
+		&& CFDictionaryGetValue(connectRef->overrides, CFSTR(kIODisplayIsDigitalKey)));
 
 	if (kIOReturnSuccess == err)
 	{
 	    if (kIOFBGTFMode & modeGenFlags)
 	    {
 		modeGenFlags = kIOFBStdMode;
-		dmFlags      = kDisplayModeValidFlag | kDisplayModeSafeFlag;
+		dmFlags      = kDisplayModeValidFlag;
 	    }
 	}
 	else
@@ -1706,8 +1860,7 @@ InstallTimingForResolution( IOFBConnectRef connectRef, EDID * edid,
 #if GTF_ON_TV
 		&& !(connectRef->hasInterlaced)
 #endif
-		&& (connectRef->overrides 
-		&& CFDictionaryGetValue(connectRef->overrides, CFSTR(kIODisplayIsDigitalKey))))
+		&& isDigital)
 	    {
 		err = kIOReturnUnsupportedMode;
 		continue;
@@ -2067,6 +2220,17 @@ InstallDIEXT( IOFBConnectRef connectRef, EDID *edid __unused, DIEXT * ext )
     else
 	connectRef->maxDisplayLinks = 1;
 
+    switch (ext->dataFormats)
+    {
+	case 0x24:
+	case 0x48:
+	    connectRef->supportedComponentDepths |= kIODisplayRGBColorComponentBits8; 
+	    break;
+	case 0x49:
+	    connectRef->supportedComponentDepths |= kIODisplayRGBColorComponentBits16; 
+	    break;
+    }
+
     DEBG(connectRef, "(%d) minPixelClockPerLink %d, maxPixelClockPerLink %d, cross %qd\n", 
 	    ext->standardSupported,
 	    minPixelClockPerLink, maxPixelClockPerLink, connectRef->dualLinkCrossover);
@@ -2136,8 +2300,8 @@ InstallVTBEXT( IOFBConnectRef connectRef, EDID * edid, VTBEXT * ext )
 		    spec.flags = (kVTBCVTRefresh60RBlank == (1 << refreshBit)) ? kResSpecReducedBlank : kNilOptions;
 		    InstallTimingForResolution(connectRef, edid, &spec,
 					    kDisplayModeValidFlag | kDisplayModeSafeFlag, kIOFBCVTEstMode);
-		    DEBG(connectRef, "VTB cvt: %ldx%ld @ %f (%lx)\n", 
-			    spec.width, spec.height, spec.refreshRate, spec.flags);
+		    DEBG(connectRef, "VTB cvt: %dx%d @ %f (%x)\n", 
+			    (int) spec.width, (int) spec.height, spec.refreshRate, (int) spec.flags);
 		}
 	    }
 	    offset += sizeof(VTBCVTTimingDesc);
@@ -2161,8 +2325,8 @@ InstallVTBEXT( IOFBConnectRef connectRef, EDID * edid, VTBEXT * ext )
 	    if (kIOReturnSuccess != DecodeStandardTiming(edid, stdTiming,
 							    &spec.width, &spec.height, &spec.refreshRate))
 		continue;
-	    DEBG(connectRef, "VTB st: %ldx%ld @ %f (%lx)\n", 
-		    spec.width, spec.height, spec.refreshRate, spec.flags);
+	    DEBG(connectRef, "VTB st: %dx%d @ %f (%x)\n", 
+		    (int) spec.width, (int) spec.height, spec.refreshRate, (int) spec.flags);
 	    InstallStandardEstablishedTiming(connectRef, edid, &spec);
 	    offset += sizeof(UInt16);
 	}
@@ -2175,9 +2339,91 @@ InstallCEA861EXT( IOFBConnectRef connectRef, EDID * edid, CEA861EXT * ext )
 {
     IOByteCount offset = ext->detailedTimingsOffset;
 
-    if (offset < 4)
+    enum {
+	kCEASupportUnderscan     = 0x80,
+	kCEASupportBasicAudio    = 0x40,
+	kCEASupportYCbCr444      = 0x20,
+	kCEASupportYCbCr422      = 0x10,
+    };
+    enum {
+	kHDMISupportFlagAI      = 0x80,
+	kHDMISupportFlagDC48    = 0x40,
+	kHDMISupportFlagDC36    = 0x20,
+	kHDMISupportFlagDC30    = 0x10,
+	kHDMISupportFlagDCY444  = 0x08,
+	kHDMISupportFlagDVIDual = 0x01,
+    };
+
+    if( offset < 4 )
 	return;
     offset -= 4;
+
+    if( 0x03 <= ext->version )
+    {
+	// Start by looking for the HDMI Identifier.  We need to know this before processing
+	// the short video descriptor block.
+        IOByteCount index = 0;
+	IOByteCount length;
+
+	if (kCEASupportYCbCr444 & ext->flags)
+	    connectRef->supportedColorModes |= kIODisplayColorModeYCbCr444;
+	if (kCEASupportYCbCr422 & ext->flags)
+	    connectRef->supportedColorModes |= kIODisplayColorModeYCbCr422;
+
+        while( index < offset )
+	{
+	    length = (ext->data[index] & 0x1f) + 1;
+	    switch( (ext->data[index] & 0xE0) )
+	    {
+		// HDMI Vendor Specific Data Block (HDMI 1.3a, p.119)
+		case 0x60:
+		    DEBG( connectRef, "Found HDMI VSDB: offset=%d\n", (int) (index + 4) );
+		    if( ext->data[index+1] == 0x03 && ext->data[index+2] == 0x0C && ext->data[index+3] == 0x00 )
+		    {
+			DEBG( connectRef, "Found 24-bit IEEE Registration Identifier (0x%02x%02x%02x)\n", 
+				ext->data[index+3], ext->data[index+2], ext->data[index+1] );
+			connectRef->hasHDMI = true;
+
+			if (length >= 6)
+			{
+			    uint32_t depths;
+			    uint8_t byte;
+			    byte = ext->data[index+4];
+			    depths = 0;
+			    if (kHDMISupportFlagDC30 & byte)
+				depths |= kIODisplayRGBColorComponentBits10;
+			    if (kHDMISupportFlagDC36 & byte)
+				depths |= kIODisplayRGBColorComponentBits12;
+			    if (kHDMISupportFlagDC48 & byte)
+				depths |= kIODisplayRGBColorComponentBits16;
+			    if (kHDMISupportFlagDCY444 & byte)
+				depths |= (depths * kIODisplayYCbCr444ColorComponentBits6);
+			    connectRef->supportedComponentDepths |= depths;
+			}
+		    }
+		    break;
+            }
+            index += length;
+        }
+
+	// Now we look for the short video descriptor block.
+        index = 0;
+        while( index < offset )
+	{
+	    length = (ext->data[index] & 0x1f) + 1;
+	    switch( (ext->data[index] & 0xE0) )
+	    {
+		// Short Video Descriptors (CEA-861-E p.59).
+		case 0x40:
+		    DEBG( connectRef, "Found Video Data Block: offset=%d\n", (int) (index + 4) );
+		    InstallFromCEAShortVideoDesc( connectRef, &ext->data[index] );
+		    break;
+	    }
+            index += length;
+        }
+    }    
+	
+    // Process the CEA Detailed Timing Descriptor.
     while (offset <= (sizeof(ext->data) - sizeof(EDIDDetailedTimingDesc)))
     {
 	DEBG(connectRef, "FromCEA:\n");
@@ -2241,12 +2487,16 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
 	connectRef->fbRange = (IODisplayTimingRange *) CFDataGetBytePtr(fbRange);
 
 
+    connectRef->supportedComponentDepths = kIODisplayRGBColorComponentBitsUnknown;
+    connectRef->supportedColorModes	 = kIODisplayColorModeRGB;
     connectRef->gtfDisplay	     = false;
     connectRef->cvtDisplay	     = false;
     connectRef->supportsReducedBlank = false;
     connectRef->hasInterlaced	     = false;
     connectRef->hasDIEXT	     = false;
     connectRef->hasCEAExt	     = false;
+    connectRef->hasHDMI		     = false;
+    connectRef->hasShortVideoDescriptors = false;
     connectRef->numGTFCurves         = 1;
     bcopy(&defaultGTFCurves, &connectRef->gtfCurves, sizeof(connectRef->gtfCurves));
 
@@ -2306,13 +2556,49 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
 	if ((size_t) count > sizeof(EDID))
 	    LookExtensions(connectRef, edid, (UInt8 *)(edid + 1), count - sizeof(EDID));
 
+	uint8_t videoInput = edid->displayParams[0];
+        if((0x80 & videoInput) && (edid->version > 1) || (edid->revision >= 4))
+	{
+	    static const uint32_t depths[8] = {
+		kIODisplayRGBColorComponentBitsUnknown, kIODisplayRGBColorComponentBits6,
+		kIODisplayRGBColorComponentBits8,       kIODisplayRGBColorComponentBits10,
+		kIODisplayRGBColorComponentBits12,      kIODisplayRGBColorComponentBits14,
+		kIODisplayRGBColorComponentBits16,      kIODisplayRGBColorComponentBitsUnknown
+	    };
+	    static const uint32_t modes[4] = {
+		kIODisplayColorModeRGB, 
+		kIODisplayColorModeRGB | kIODisplayColorModeYCbCr444,
+		kIODisplayColorModeRGB | kIODisplayColorModeYCbCr422,
+		kIODisplayColorModeRGB | kIODisplayColorModeYCbCr444 | kIODisplayColorModeYCbCr422,
+	    };
+	    uint32_t supportedModes, supportedDepths;
+
+	    /* feature support */
+	    supportedModes  = modes[(edid->displayParams[4] >> 3) & 3];
+	    supportedDepths = depths[(videoInput >> 4) & 7];
+            if ((0x9236 == connectRef->displayProduct) 
+		&& (kDisplayAppleVendorID == connectRef->displayVendor))
+	    {
+		supportedModes = kIODisplayColorModeRGB;
+	    }
+
+	    if (kIODisplayColorModeYCbCr444 & supportedModes)
+		supportedDepths |= supportedDepths *
+				    (kIODisplayYCbCr444ColorComponentBits6 / kIODisplayRGBColorComponentBits6);
+	    if (kIODisplayColorModeYCbCr422 & supportedModes)
+		supportedDepths |= supportedDepths * 
+				    (kIODisplayYCbCr422ColorComponentBits6 / kIODisplayRGBColorComponentBits6);
+	    connectRef->supportedColorModes |= supportedModes;
+	    connectRef->supportedComponentDepths |= supportedDepths;
+	}
+
 #if RLOG
         if (connectRef->scalerInfo && (kIOScaleCanSupportInset & connectRef->scalerInfo->scalerFeatures))
             connectRef->useScalerUnderscan |= (connectRef->displayVendor == 4268);
 #endif
 
-	DEBG(connectRef, "Display maxLinks %ld, crossover %qd\n", 
-			connectRef->maxDisplayLinks, connectRef->dualLinkCrossover);
+	DEBG(connectRef, "Display maxLinks %d, crossover %qd\n", 
+			(int) connectRef->maxDisplayLinks, connectRef->dualLinkCrossover);
 
         // max dimensions
         connectRef->dimensions.setFlags = kDisplayModeNotPresetFlag;
@@ -2369,22 +2655,25 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
 	}
 
         // EDID timing recs
-	for( i = 0; i < 4; i++ )
-	{
-            if( i && (0 == bcmp( &edid->descriptors[0].timing,
-                                 &edid->descriptors[i].timing,
-                                 sizeof( EDIDDetailedTimingDesc))))
+        for( i = 0; i < 4; i++ )
+        {
+            if( i && (0 == bcmp(&edid->descriptors[0].timing,
+                                &edid->descriptors[i].timing,
+                                sizeof( EDIDDetailedTimingDesc))))
                 continue;
 
-            InstallFromEDIDDesc( connectRef,
-                                 edid,
-                                 &edid->descriptors[i].timing,
-				 kDisplayModeValidFlag | kDisplayModeSafeFlag
-				 | ((i == defaultIndex) ? kDisplayModeDefaultFlag : 0));
+            InstallFromEDIDDesc(connectRef,
+                                edid,
+                                &edid->descriptors[i].timing,
+                                kDisplayModeValidFlag | kDisplayModeSafeFlag
+                                | ((i == defaultIndex) ? kDisplayModeDefaultFlag : 0));
         }
 
-        InstallCVTStandardTimings( connectRef, edid );
-        InstallStandardEstablishedTimings( connectRef, edid );
+        if( !connectRef->hasHDMI )
+        {
+            InstallCVTStandardTimings( connectRef, edid );
+            InstallStandardEstablishedTimings( connectRef, edid );
+        }
     }
     while( false );
 
@@ -2406,17 +2695,20 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
 
     IODisplayGetAspect( connectRef );
 
-    if (CFDictionaryGetValue(connectRef->overrides, CFSTR("trng"))
-    || ((!CFDictionaryGetValue(connectRef->overrides, CFSTR(kIODisplayIsDigitalKey)))
-	&& ((connectRef->displayVendor != kDisplayVendorIDUnknown)
-	 || (connectRef->displayProduct == kDisplayProductIDGeneric))
-	&& (!edid || ((0xffffffff != connectRef->dimensions.width)
-		    && (0xffffffff != connectRef->dimensions.height)))))
+    if (!connectRef->hasHDMI)
     {
-	// have range limits, or analog-VGA/nonsensed
-	InstallGTFTimings( connectRef, edid );
+	if (CFDictionaryGetValue(connectRef->overrides, CFSTR("trng"))
+	|| ((!CFDictionaryGetValue(connectRef->overrides, CFSTR(kIODisplayIsDigitalKey)))
+	    && ((connectRef->displayVendor != kDisplayVendorIDUnknown)
+	     || (connectRef->displayProduct == kDisplayProductIDGeneric))
+	    && (!edid || ((0xffffffff != connectRef->dimensions.width)
+			&& (0xffffffff != connectRef->dimensions.height)))))
+	{
+	    // have range limits, or analog-VGA/nonsensed
+	    InstallGTFTimings( connectRef, edid );
+	}
     }
-
+	
     connectRef->fbRange = 0;
     if (fbRange)
 	CFRelease(fbRange);

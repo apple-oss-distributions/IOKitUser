@@ -1,24 +1,34 @@
+/*
+ * Copyright (c) 2008 Apple Inc. All rights reserved.
+ *
+ * @APPLE_LICENSE_HEADER_START@
+ * 
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
+ * 
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+ * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ * 
+ * @APPLE_LICENSE_HEADER_END@
+ */
 #include <TargetConditionals.h>
 #include <libc.h>
 #include <sys/stat.h>
-#include <mach-o/dyld.h>
+#include <dlfcn.h>
 #include  "IOSystemConfiguration.h"
 
-__private_extern__ CFStringRef kSCCompAnyRegex = NULL;
-__private_extern__ CFStringRef kSCDynamicStoreDomainState = NULL;
+__private_extern__ CFStringRef kSCCompAnyRegex = CFSTR("[^/]+");
+__private_extern__ CFStringRef kSCDynamicStoreDomainState = CFSTR("State:");
 
-static void *
-symAddrInImage(const struct mach_header* image, const char *name)
-{
-    if (image) {
-	// XXX gvdl: aren't these symbols being leaked for non run loop code?
-	NSSymbol sym = NSLookupSymbolInImage(image, name,
-		NSLOOKUPSYMBOLINIMAGE_OPTION_BIND);
-	return NSAddressOfSymbol(sym);
-    }
-    else
-	return 0;
-}
 
 #define SYSTEM_FRAMEWORK_DIR "/System/Library/Frameworks"
 #define SYSTEM_CONFIGURATION "SystemConfiguration.framework/SystemConfiguration"
@@ -26,11 +36,10 @@ symAddrInImage(const struct mach_header* image, const char *name)
 
 static void * symAddrInSC(const char *name)
 {
-    static const void *image;
-
-    // Is thread safe, but will leak an image ref if raced
-    if (!image) {
-	const void *locImage;
+    static void* handle = NULL;
+    
+    if (!handle) {
+	void *locHandle;
 	const char  *framework = SC_FRAMEWORK;
 	struct stat  statbuf;
 	const char  *suffix   = getenv("DYLD_IMAGE_SUFFIX");
@@ -40,22 +49,22 @@ static void * symAddrInSC(const char *name)
 	if (suffix)
 	    strlcat(path, suffix, sizeof(path));
 	if (0 <= stat(path, &statbuf))
-	    locImage = NSAddImage(path,      NSADDIMAGE_OPTION_NONE);
+	    locHandle = dlopen(path,      RTLD_LAZY);
 	else
-	    locImage = NSAddImage(framework, NSADDIMAGE_OPTION_NONE);
+	    locHandle = dlopen(framework, RTLD_LAZY);
 
-	if (locImage) {
+	if (locHandle) {
 	    const CFStringRef *refP;
-	    refP = symAddrInImage(locImage, "_kSCCompAnyRegex");
+	    refP = dlsym(locHandle, "kSCCompAnyRegex");
 	    kSCCompAnyRegex = *refP;
-	    refP = symAddrInImage(locImage, "_kSCDynamicStoreDomainState");
+	    refP = dlsym(locHandle, "kSCDynamicStoreDomainState");
 	    kSCDynamicStoreDomainState = *refP;
-	    image = locImage;
+	    handle = locHandle;
 	}
     }
 
-    if (image)
-	return symAddrInImage(image, name);
+    if (handle)
+	return dlsym(handle, name);
     else
 	return NULL;
 }
@@ -67,7 +76,7 @@ SCDynamicStoreAddWatchedKey	(SCDynamicStoreRef		store,
 {
     static typeof (SCDynamicStoreAddWatchedKey) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreAddWatchedKey");
+	dyfunc = symAddrInSC("SCDynamicStoreAddWatchedKey");
 
     if (dyfunc)
 	return (*dyfunc)(store, key, isRegex);
@@ -80,7 +89,7 @@ SCError()
 {
     static typeof (SCError) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCError");
+	dyfunc = symAddrInSC("SCError");
     if (dyfunc)
 	return (*dyfunc)();
     else
@@ -96,7 +105,7 @@ SCDynamicStoreCopyMultiple	(
 {
     static typeof (SCDynamicStoreCopyMultiple) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreCopyMultiple");
+	dyfunc = symAddrInSC("SCDynamicStoreCopyMultiple");
     if (dyfunc)
 	return (*dyfunc)(store, keys, patterns);
     else
@@ -111,7 +120,7 @@ SCDynamicStoreCopyValue		(
 {
     static typeof (SCDynamicStoreCopyValue) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreCopyValue");
+	dyfunc = symAddrInSC("SCDynamicStoreCopyValue");
     if (dyfunc)
 	return (*dyfunc)(store, key);
     else
@@ -128,7 +137,7 @@ SCDynamicStoreCreate		(
 {
     static typeof (SCDynamicStoreCreate) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreCreate");
+	dyfunc = symAddrInSC("SCDynamicStoreCreate");
     if (dyfunc)
 	return (*dyfunc)(allocator, name, callout, context);
     else
@@ -144,7 +153,7 @@ SCDynamicStoreCreateRunLoopSource(
 {
     static typeof (SCDynamicStoreCreateRunLoopSource) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreCreateRunLoopSource");
+	dyfunc = symAddrInSC("SCDynamicStoreCreateRunLoopSource");
     if (dyfunc)
 	return (*dyfunc)(allocator, store, order);
     else
@@ -178,7 +187,7 @@ SCDynamicStoreKeyCreatePreferences(
 {
     static typeof (SCDynamicStoreKeyCreatePreferences) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreKeyCreatePreferences");
+	dyfunc = symAddrInSC("SCDynamicStoreKeyCreatePreferences");
     if (dyfunc)
 	return (*dyfunc)(allocator, prefsID, keyType);
     else
@@ -194,7 +203,7 @@ SCDynamicStoreSetNotificationKeys(
 {
     static typeof (SCDynamicStoreSetNotificationKeys) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreSetNotificationKeys");
+	dyfunc = symAddrInSC("SCDynamicStoreSetNotificationKeys");
     if (dyfunc)
 	return (*dyfunc)(store, keys, patterns);
     else
@@ -210,7 +219,7 @@ SCDynamicStoreSetValue		(
 {
     static typeof (SCDynamicStoreSetValue) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreSetValue");
+	dyfunc = symAddrInSC("SCDynamicStoreSetValue");
     if (dyfunc)
 	return (*dyfunc)(store, key, value);
     else
@@ -225,7 +234,7 @@ SCDynamicStoreNotifyValue		(
 {
     static typeof (SCDynamicStoreNotifyValue) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCDynamicStoreNotifyValue");
+	dyfunc = symAddrInSC("SCDynamicStoreNotifyValue");
     if (dyfunc)
 	return (*dyfunc)(store, key);
     else
@@ -239,7 +248,7 @@ SCPreferencesApplyChanges	(
 {
     static typeof (SCPreferencesApplyChanges) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesApplyChanges");
+	dyfunc = symAddrInSC("SCPreferencesApplyChanges");
     if (dyfunc)
 	return (*dyfunc)(prefs);
     else
@@ -253,7 +262,7 @@ SCPreferencesCommitChanges	(
 {
     static typeof (SCPreferencesCommitChanges) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesCommitChanges");
+	dyfunc = symAddrInSC("SCPreferencesCommitChanges");
     if (dyfunc)
 	return (*dyfunc)(prefs);
     else
@@ -269,7 +278,7 @@ SCPreferencesCreate		(
 {
     static typeof (SCPreferencesCreate) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesCreate");
+	dyfunc = symAddrInSC("SCPreferencesCreate");
     if (dyfunc)
 	return (*dyfunc)(allocator, name, prefsID);
     else
@@ -287,7 +296,7 @@ SCPreferencesCreateWithAuthorization	(
 {
     static typeof (SCPreferencesCreateWithAuthorization) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesCreateWithAuthorization");
+	dyfunc = symAddrInSC("SCPreferencesCreateWithAuthorization");
     if (dyfunc)
 	return (*dyfunc)(allocator, name, prefsID, authorization);
     else
@@ -303,7 +312,7 @@ SCPreferencesGetValue		(
 {
     static typeof (SCPreferencesGetValue) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesGetValue");
+	dyfunc = symAddrInSC("SCPreferencesGetValue");
     if (dyfunc)
 	return (*dyfunc)(prefs, key);
     else
@@ -318,7 +327,7 @@ SCPreferencesLock		(
 {
     static typeof (SCPreferencesLock) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesLock");
+	dyfunc = symAddrInSC("SCPreferencesLock");
     if (dyfunc)
 	return (*dyfunc)(prefs, wait);
     else
@@ -333,7 +342,7 @@ SCPreferencesRemoveValue	(
 {
     static typeof (SCPreferencesRemoveValue) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesRemoveValue");
+	dyfunc = symAddrInSC("SCPreferencesRemoveValue");
     if (dyfunc)
 	return (*dyfunc)(prefs, key);
     else
@@ -349,7 +358,7 @@ SCPreferencesSetValue		(
 {
     static typeof (SCPreferencesSetValue) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesSetValue");
+	dyfunc = symAddrInSC("SCPreferencesSetValue");
     if (dyfunc)
 	return (*dyfunc)(prefs, key, value);
     else
@@ -363,7 +372,7 @@ SCPreferencesUnlock		(
 {
     static typeof (SCPreferencesUnlock) *dyfunc;
     if (!dyfunc) 
-	dyfunc = symAddrInSC("_SCPreferencesUnlock");
+	dyfunc = symAddrInSC("SCPreferencesUnlock");
     if (dyfunc)
 	return (*dyfunc)(prefs);
     else
