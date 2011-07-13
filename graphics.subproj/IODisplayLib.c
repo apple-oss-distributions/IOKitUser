@@ -300,7 +300,8 @@ IODisplayCreateOverrides( IOOptionBits options,
                                             kCFStringEncodingMacRoman );
         if( !string)
             continue;
-        url = CFURLCreateWithString( kCFAllocatorDefault, string, NULL);
+        url = CFURLCreateWithFileSystemPath( kCFAllocatorDefault, string, 
+        									 kCFURLPOSIXPathStyle, true );
         CFRelease(string);
         if( !url)
             continue;
@@ -359,8 +360,8 @@ EDIDInfo( struct EDID * edid,
     }
 }
 
-static Boolean
-EDIDName( EDID * edid, char * name )
+__private_extern__ Boolean
+IODisplayEDIDName( EDID * edid, char * name )
 {
     char *      oname = name;
     EDIDDesc *  desc;
@@ -489,7 +490,7 @@ static void GenerateProductName( CFMutableDictionaryRef dict,
         char sbuf[ 128 ];
         const char * name = NULL;
 
-        if( EDIDName(edid, sbuf))
+        if( IODisplayEDIDName(edid, sbuf))
             name = sbuf;
         else if (edid)
             name = "Unknown Display";
@@ -569,6 +570,7 @@ MaxTimingRangeRec( IODisplayTimingRange * range )
     range->charSizeHorizontalBlanking           = 1;
     range->charSizeHorizontalSyncOffset         = 1;
     range->charSizeHorizontalSyncPulse          = 1;
+    range->charSizeVerticalActive               = 1;
     range->charSizeVerticalBlanking             = 1;
     range->charSizeVerticalSyncOffset           = 1;
     range->charSizeVerticalSyncPulse            = 1;
@@ -675,13 +677,14 @@ ParseMonitorDescriptor(IOFBConnectRef connectRef, EDID * edid __unused, EDIDGene
                 if (vendor >= kNumVendors)
                     continue;
                 connectRef->vendorsFound |= (1 << vendor);
+#if DISABLED_7668853
                 byte = desc->data[idx + 1]; // bpp
                 if ((byte >= 6) && (byte <= 16))
                 {
                     connectRef->supportedComponentDepths[vendor] 
                         = (kIODisplayRGBColorComponentBits6 << ((byte - 6) >> 1));
                 }
-
+#endif
                 byte = desc->data[idx + 2]; // dither
                 connectRef->ditherControl[vendor] = (byte << kIODisplayDitherRGBShift);
 
@@ -1469,6 +1472,8 @@ CheckTimingWithRange( IOFBConnectRef connectRef __unused,
         return(23);
     if( timing->horizontalSyncPulseWidth % range->charSizeHorizontalSyncPulse)
         return(24);
+    if( timing->verticalActive % range->charSizeVerticalActive)
+        return(34);
     if( timing->verticalBlanking % range->charSizeVerticalBlanking)
         return(25);
     if( timing->verticalSyncOffset % range->charSizeVerticalSyncOffset)
@@ -1652,7 +1657,7 @@ InstallTiming( IOFBConnectRef                connectRef,
 
     if (connectRef->dualLinkCrossover)
     {
-        if (timing->detailedInfo.v2.pixelClock >= connectRef->dualLinkCrossover)
+        if (timing->detailedInfo.v2.pixelClock > connectRef->dualLinkCrossover)
             timing->detailedInfo.v2.numLinks = 2;
         else
             timing->detailedInfo.v2.numLinks = 1;
@@ -2569,7 +2574,7 @@ InstallCEA861EXT( IOFBConnectRef connectRef, EDID * edid, CEA861EXT * ext, Boole
     if ((1 == (kCEASupportNativeCount & ext->flags))
         && (kDisplayAppleVendorID == connectRef->displayVendor))
     {
-//        connectRef->defaultOnly = true;
+        connectRef->defaultOnly = true;
     }
         
     // Process the CEA Detailed Timing Descriptor.
@@ -3065,25 +3070,16 @@ _IODisplayCreateInfoDictionary(
 #warning             ****************
 #warning             ** SPOOF_EDID **
 #warning             ****************
-
-//      if (!connectRef || !connectRef->dependentID || connectRef->dependentIndex)
-        {
-            vm_offset_t                 bytes;
-            vm_size_t                   byteLen;
-    
-            if (kIOReturnSuccess == readFile( "/testedid", &bytes, &byteLen ))
-            {
-                data = CFDataCreateWithBytesNoCopy( kCFAllocatorDefault,
-                                                    (const void *) bytes, byteLen, kCFAllocatorNull );
-//              vm_deallocate( mach_task_self(), bytes, byteLen );
-            }
-            else
-                data = CFDataCreateWithBytesNoCopy( kCFAllocatorDefault,
-                                                    spoofEDID, 128, kCFAllocatorNull );
-
+		if (data)
+		{
+            EDIDInfo( (EDID *) CFDataGetBytePtr(data), &vendor, &product, NULL, NULL, NULL);
+			if (0x10ac == vendor)
+			{
+				data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault,
+												   spoofEDID, 128, kCFAllocatorNull);
+			}
+			vendor = product = 0;
         }
-
-        vendor = product = 0;
 #endif
         if( !data)
             continue;

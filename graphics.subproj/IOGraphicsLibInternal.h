@@ -396,6 +396,7 @@ struct IOFBConnect
     Boolean                     relaunch;
     Boolean                     firstBoot;
     Boolean                     displayMirror;
+    Boolean                     didPowerOff;
 
     struct IOAccelConnectStruct * transformSurface;
 
@@ -418,11 +419,6 @@ __private_extern__ kern_return_t
 IOFBInstallMode( IOFBConnectRef connectRef, IODisplayModeID mode,
                  IOFBDisplayModeDescription * desc,
                  UInt32 driverFlags, IOOptionBits modeGenFlags );
-
-__private_extern__ io_service_t
-IODisplayForFramebuffer(
-        io_service_t            framebuffer,
-        IOOptionBits            options );
 
 __private_extern__ CFDictionaryRef
 _IODisplayCreateInfoDictionary(
@@ -467,3 +463,6 @@ IOFBLogRange(IOFBConnectRef connectRef, const IODisplayTimingRange * range);
 
 __private_extern__ float
 RefreshRateFromDetailedTiming( IODetailedTimingInformationV2 * detailed );
+
+__private_extern__ Boolean
+IODisplayEDIDName( EDID * edid, char * name );
