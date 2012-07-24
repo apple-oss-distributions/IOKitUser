@@ -24,16 +24,26 @@
 #ifndef	_powermanagement_mig_h_
 #define	_powermanagement_mig_h_
 
-#define kPMMIGStringLength      1024
+#define kPMMIGStringLength                          1024
 
 typedef char * string_t;
+
+enum {
+    kIOPMGetValueDWBTSupportOnAC                        = 1,
+    kIOPMGetValueDWBTSupportOnBatt                      = 2
+};
 
 /*
  * Arguments to powermanagement.defs MIG call io_pm_assertion_copy_details
  *    parameter "whichData"
  */
 enum {
-    kIOPMAssertionMIGCopyOneAssertionProperties     = 1
+    kIOPMAssertionMIGCopyOneAssertionProperties     = 1,
+    kIOPMAssertionMIGCopyAll                        = 2,
+    kIOPMAssertionMIGCopyStatus                     = 3,
+    kIOPMAssertionMIGCopyTimedOutAssertions         = 4,
+    kIOPMPowerEventsMIGCopyScheduledEvents          = 5,
+    kIOPMPowerEventsMIGCopyRepeatEvents             = 6,
 };
 
 /*
@@ -45,5 +55,12 @@ enum {
     kIOPMAssertionMIGDoRelease                      = -1
 };
 
+/*
+ * Arguments to powermanagement.defs MIG call io_pm_get_value_int
+ */
+enum {
+    kIOPMGetSilentRunningInfo                        = 1,
+    kIOPMMT2Bookmark
+};
 
 #endif

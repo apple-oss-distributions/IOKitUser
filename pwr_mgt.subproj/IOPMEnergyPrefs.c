@@ -32,11 +32,13 @@
 #include <IOKit/IOCFSerialize.h>
 #include <IOKit/IOHibernatePrivate.h>
 #include <servers/bootstrap.h>
+#include <bootstrap_priv.h>
 #include <sys/syslog.h>
 #include "IOPMLib.h"
 #include "IOPMLibPrivate.h"
 #include "powermanagement.h"
 
+#include <asl.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOBSD.h>
 
@@ -60,25 +62,25 @@ typedef struct {
 } PMSettingDescriptorStruct;
 
 PMSettingDescriptorStruct defaultSettings[] =
-{	/* Setting Name   						AC - Battery */
-	{kIOPMDisplaySleepKey, 					5, 		5},
-	{kIOPMDiskSleepKey, 					10,		5},
-	{kIOPMSystemSleepKey, 					10,		5},
-	{kIOPMWakeOnLANKey, 					0,		0},
-	{kIOPMWakeOnRingKey, 					0,		0},
-	{kIOPMRestartOnPowerLossKey, 			0,		0},
-	{kIOPMWakeOnACChangeKey, 				0,		0}, 
-	{kIOPMSleepOnPowerButtonKey, 			1,		0},
-	{kIOPMWakeOnClamshellKey, 				1,		1},
-	{kIOPMReduceBrightnessKey, 				0,		1},
-	{kIOPMDisplaySleepUsesDimKey, 			1,		1},
-	{kIOPMMobileMotionModuleKey, 			1,		1},
-	{kIOPMTTYSPreventSleepKey, 				1,		1},
-	{kIOPMGPUSwitchKey, 					0,		1},
-    {kIOPMPrioritizeNetworkReachabilityOverSleepKey, 0, 0},
-    {kIOPMRestartOnKernelPanicKey,          kSecondsIn5Years, kSecondsIn5Years},
-    {kIOPMDeepSleepEnabledKey,              0,      0},
-    {kIOPMDeepSleepDelayKey,                0,      0}
+{   /* Setting Name                             AC - Battery */
+    {kIOPMDisplaySleepKey,                              5,  5},
+    {kIOPMDiskSleepKey,                                 10, 5},
+    {kIOPMSystemSleepKey,                               10, 5},
+    {kIOPMWakeOnLANKey,                                 0,  0},
+    {kIOPMWakeOnRingKey,                                0,  0},
+    {kIOPMRestartOnPowerLossKey,                        0,  0},
+    {kIOPMWakeOnACChangeKey,                            0,  0}, 
+    {kIOPMSleepOnPowerButtonKey,                        1,  0},
+    {kIOPMWakeOnClamshellKey,                           1,  1},
+    {kIOPMReduceBrightnessKey,                          0,  1},
+    {kIOPMDisplaySleepUsesDimKey,                       1,  1},
+    {kIOPMMobileMotionModuleKey,                        1,  1},
+    {kIOPMTTYSPreventSleepKey,                          1,  1},
+    {kIOPMGPUSwitchKey,                                 0,  1},
+    {kIOPMPrioritizeNetworkReachabilityOverSleepKey,    0,  0},
+    {kIOPMDeepSleepEnabledKey,                          0,  0},
+    {kIOPMDeepSleepDelayKey,                            0,  0},
+    {kIOPMDarkWakeBackgroundTaskKey,                    1,  0}
 };
 
 static const int kPMSettingsCount = sizeof(defaultSettings)/sizeof(PMSettingDescriptorStruct);
@@ -185,7 +187,8 @@ static IOReturn readAllPMPlistSettings(
                 CFMutableDictionaryRef *customSettings, 
                 CFDictionaryRef *profileSelections);
 
-
+IOReturn _pm_connect(mach_port_t *newConnection);
+IOReturn _pm_disconnect(mach_port_t connection);
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
@@ -464,38 +467,74 @@ bool IOPMFeatureIsAvailable(CFStringRef PMFeature, CFStringRef power_source)
 {
     CFDictionaryRef             supportedFeatures = NULL;
     io_registry_entry_t         registry_entry = MACH_PORT_NULL;
-	bool						return_this_value = false;
-    
-	registry_entry = getPMRootDomainRef();
-    
-	if(!registry_entry) 
-		return false;
-    
-	supportedFeatures = IORegistryEntryCreateCFProperty(
-                                                        registry_entry, CFSTR("Supported Features"),
+    int                         return_this_value = 0;
+
+    if(!(registry_entry = getPMRootDomainRef())) 
+        return false;
+
+    supportedFeatures = IORegistryEntryCreateCFProperty(registry_entry, CFSTR("Supported Features"),
                                                         kCFAllocatorDefault, kNilOptions);
-    
-	if (!supportedFeatures)
-		return false;
-    
-	return_this_value = IOPMFeatureIsAvailableWithSupportedTable(PMFeature, power_source, supportedFeatures);
-	
-	CFRelease(supportedFeatures);
-	
-	return return_this_value;
+
+    if (!supportedFeatures)
+        return false;
+
+    if( CFEqual(PMFeature, CFSTR(kIOPMDarkWakeBackgroundTaskKey)) )
+    {
+        kern_return_t       kern_result = kIOReturnInvalid;
+        IOReturn            ret;
+        mach_port_t         server_port = MACH_PORT_NULL;
+        
+        ret = _pm_connect(&server_port);
+        
+        kern_result = io_pm_get_value_int(server_port, kIOPMGetSilentRunningInfo, (int *)&return_this_value);
+     
+        if ( (ret != kIOReturnSuccess) || (return_this_value == 0) ) {
+            return_this_value = 0;
+            _pm_disconnect(server_port);
+            goto exit;
+        }
+
+        return_this_value = 0;
+
+        if (!power_source)
+            power_source = CFSTR(kIOPMACPowerKey);
+
+        CFTypeRef btdetails = CFDictionaryGetValue( supportedFeatures,
+                                CFSTR(kIOPMDarkWakeBackgroundTaskKey));
+        CFTypeRef ssdetails = CFDictionaryGetValue( supportedFeatures,
+                                CFSTR(kIOPMSleepServicesKey));
+        if(featureSupportsPowerSource(btdetails, power_source) ||
+           featureSupportsPowerSource(ssdetails, power_source))
+        {
+            return_this_value = 1;
+        }
+        _pm_disconnect(server_port);
+    }
+    else
+    {
+       return_this_value = IOPMFeatureIsAvailableWithSupportedTable(
+                               PMFeature,
+                               power_source,
+                               supportedFeatures);
+    }
+
+exit:
+    CFRelease(supportedFeatures);
+
+    return (return_this_value ? true:false);
 }
 
 
 bool IOPMFeatureIsAvailableWithSupportedTable(
-     CFStringRef 				PMFeature, 
-     CFStringRef 				power_source,
-     CFDictionaryRef                            supportedFeatures)
+     CFStringRef                PMFeature,
+     CFStringRef                power_source,
+     CFDictionaryRef            supportedFeatures)
 {
     CFStringRef                 supportedString = NULL;
     CFTypeRef                   featureDetails = NULL;
     bool                        ret = false;
     
-    if (!power_source) 
+    if (!power_source)
         power_source = CFSTR(kIOPMACPowerKey);
     
     if (!supportedFeatures)
@@ -512,12 +551,11 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
         goto exit;
     }
 
+    /* deprecated - kIOPMRestartOnKernelPanicKey
+     * 11195840 Remove "restart automatically if computer freezes" check-box
+     */     
     if (CFEqual(PMFeature, CFSTR(kIOPMRestartOnKernelPanicKey))) { 
-#if TARGET_OS_EMBEDDED
         ret = false;
-#else
-        ret = true;
-#endif
         goto exit;
     }
     
@@ -571,7 +609,7 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
 			CFRelease(ps);
         goto exit;
     }
-    
+
     // ***********************************
     // Generic code for all other settings    
     
@@ -652,8 +690,11 @@ IOReturn IOPMSetActivePowerProfiles(CFDictionaryRef which_profile)
     }
     
     // open reference to PM configd
-    kern_result = bootstrap_look_up(bootstrap_port, 
-            kIOPMServerBootstrapName, &server_port);    
+    kern_result = bootstrap_look_up2(bootstrap_port, 
+                                     kIOPMServerBootstrapName, 
+                                     &server_port, 
+                                     0, 
+                                     BOOTSTRAP_PRIVILEGED_SERVER);    
     if(KERN_SUCCESS != kern_result) {
         return kIOReturnError;
     }
@@ -1183,7 +1224,18 @@ static void IOPMRemoveIrrelevantProperties(CFMutableDictionaryRef energyPrefs)
             // For each specific property within each dictionary
             while(--dict_count >= 0)
             {
-                if( !IOPMFeatureIsAvailableWithSupportedTable((CFStringRef)dict_keys[dict_count], 
+                if( CFEqual((CFStringRef)dict_keys[dict_count], CFSTR(kIOPMDarkWakeBackgroundTaskKey)) ) 
+                {
+                   if ( (!IOPMFeatureIsAvailableWithSupportedTable( CFSTR(kIOPMDarkWakeBackgroundTaskKey), 
+                            (CFStringRef)profile_keys[profile_count], _supportedCached)  &&
+                        !IOPMFeatureIsAvailableWithSupportedTable( CFSTR(kIOPMSleepServicesKey), 
+                            (CFStringRef)profile_keys[profile_count], _supportedCached) ) 
+                      ) 
+                   {
+                       CFDictionaryRemoveValue(this_profile, (CFStringRef)dict_keys[dict_count]);    
+                   }
+                }
+                else if( !IOPMFeatureIsAvailableWithSupportedTable((CFStringRef)dict_keys[dict_count], 
                                     (CFStringRef)profile_keys[profile_count], _supportedCached) )
                 {
                     // If the property isn't supported, remove it

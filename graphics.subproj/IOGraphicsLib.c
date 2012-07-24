@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2000 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1998-2000, 2012 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,6 +24,7 @@
 #include <sys/cdefs.h>
 
 #include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach/thread_switch.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -47,6 +48,7 @@
 #include <IOKit/graphics/IOGraphicsTypesPrivate.h>
 #include <IOKit/graphics/IOAccelSurfaceControl.h>
 #include <IOKit/graphics/IOAccelSurfaceConnect.h>
+#include <IOKit/IOHibernatePrivate.h>
 #include "IOGraphicsLibInternal.h"
 
 #ifndef kIOFBDependentIDKey
@@ -71,14 +73,9 @@ enum {
     kInstallMinHeight = 768
 };
 
-#if IOGRAPHICSTYPES_REV < 10
 enum {
-    kDisplayModeValidForMirroringFlag   = 0x00200000
-};
-#endif
-
-enum {
-    kAddSafeFlags = (kDisplayModeValidFlag | kDisplayModeValidateAgainstDisplay)
+    kMirrorOnlyFlags = (kDisplayModeValidForAirPlayFlag | kDisplayModeValidForMirroringFlag),
+    kAddSafeFlags    = (kDisplayModeValidFlag | kDisplayModeValidateAgainstDisplay)
 };
 
 enum { kIOFBSWOfflineDisplayModeID = (IODisplayModeID) 0xffffff00 };
@@ -138,7 +135,8 @@ IOFBLookScaleBaseMode( IOFBConnectRef connectRef,
                         IOFBDisplayModeDescription * scaleDesc );
 static kern_return_t
 IOFBInstallScaledModes( IOFBConnectRef connectRef,
-                        IOFBDisplayModeDescription * scaleBase );
+                        IOFBDisplayModeDescription * scaleBase,
+                        Boolean onlyMirrorModes );
 static kern_return_t
 IOFBInstallScaledMode( IOFBConnectRef connectRef,
                        IOFBDisplayModeDescription * desc,
@@ -787,6 +785,12 @@ IOFBGetAttributeForFramebuffer( io_connect_t connect, io_connect_t otherConnect,
     return( err );
 }
 
+static void 
+IOFBDictRemoveModePI(const void *key __unused, const void *value, void *context __unused)
+{
+    CFDictionaryRemoveValue((CFMutableDictionaryRef) value, CFSTR(kIOFBModePIKey));
+}
+
 kern_return_t
 IOFBSetAttributeForFramebuffer( io_connect_t connect, io_connect_t otherConnect,
                                 IOSelect attribute, UInt32 value )
@@ -820,6 +824,13 @@ IOFBSetAttributeForFramebuffer( io_connect_t connect, io_connect_t otherConnect,
     {
         DEBG(connectRef, "did set mirror(%x)\n", err);
         IOFBResetTransform(connectRef);
+
+        CFDictionaryApplyFunction(connectRef->modes, &IOFBDictRemoveModePI, NULL);
+		if (otherConnect)
+		{
+			IOFBConnectRef otherConnectRef = IOFBConnectToRef( otherConnect );
+			if (otherConnectRef) CFDictionaryApplyFunction(otherConnectRef->modes, &IOFBDictRemoveModePI, NULL);
+		}
     }
 
     return( err );
@@ -1100,6 +1111,72 @@ GetTovr( IOFBConnectRef connectRef, IOAppleTimingID appleTimingID,  UInt32 * fla
     return (result);
 }
 
+static void
+MergeDisplayModeInformation(IOFBConnectRef connectRef __unused, 
+							IODisplayModeInformation * from, 
+							IODisplayModeInformation * to)
+{
+	to->flags |= from->flags;
+	if (!to->imageWidth)  to->imageWidth  = from->imageWidth;
+	if (!to->imageHeight) to->imageHeight = from->imageHeight;
+}
+
+static void
+IOFBSetImageSize(IOFBConnectRef connectRef __unused,
+				 IOFBDisplayModeDescription * desc)
+{
+	float nativeWidth, nativeHeight;
+	float width, height, aspectDiff;
+	uint32_t imageWidth, imageHeight;
+
+	DEBG(connectRef, "%d x %d, %d x %d, %d x %d\n",
+				desc->timingInfo.detailedInfo.v2.horizontalActive,
+				desc->timingInfo.detailedInfo.v2.verticalActive,
+				desc->timingInfo.detailedInfo.v2.horizontalScaled,
+				desc->timingInfo.detailedInfo.v2.verticalScaled,
+				desc->info.imageWidth,
+				desc->info.imageHeight
+				);
+
+	nativeWidth  = desc->timingInfo.detailedInfo.v2.horizontalActive;
+	nativeHeight = desc->timingInfo.detailedInfo.v2.verticalActive;
+	width = desc->timingInfo.detailedInfo.v2.horizontalScaled;
+	if (!width) width = nativeWidth;
+	height = desc->timingInfo.detailedInfo.v2.verticalScaled;
+	if (!height) height = nativeHeight;
+	if (kIOScaleSwapAxes & desc->timingInfo.detailedInfo.v2.scalerFlags)
+	{
+		aspectDiff = width;
+		width = height;
+		height = aspectDiff;
+	}
+	imageWidth  = desc->info.imageWidth;
+	imageHeight = desc->info.imageHeight;
+	if (!(kDisplayModeStretchedFlag & desc->info.flags))
+	{
+		aspectDiff = (nativeWidth / nativeHeight) / (width / height);
+		if (aspectDiff > 1.03125)
+			imageWidth = (width / height * imageHeight);
+		else if (aspectDiff < (1.0 - 0.03125))
+			imageHeight = (height / width * imageWidth);
+	}
+	if (kIOScaleSwapAxes & desc->timingInfo.detailedInfo.v2.scalerFlags)
+	{
+		desc->info.imageHeight = imageWidth;
+		desc->info.imageWidth  = imageHeight;
+	}
+	else
+	{
+		desc->info.imageWidth  = imageWidth;
+		desc->info.imageHeight = imageHeight;
+	}
+
+	DEBG(connectRef, "%d x %d\n", 
+				desc->info.imageWidth,
+				desc->info.imageHeight
+				);
+}
+
 __private_extern__ kern_return_t
 IOFBInstallMode( IOFBConnectRef connectRef, IODisplayModeID mode,
                  IOFBDisplayModeDescription * desc,
@@ -1202,7 +1279,7 @@ IOFBInstallMode( IOFBConnectRef connectRef, IODisplayModeID mode,
                                               &connectRef->driverModeInfo[i].timingInfo.detailedInfo.v2,
                                               modeGenFlags))
                         {
-                            connectRef->driverModeInfo[i].info.flags |= info->flags;
+							MergeDisplayModeInformation(connectRef, info, &connectRef->driverModeInfo[i].info);
                             connectRef->driverModeInfo[i].info.flags &= maskFlags;
                             eq = true;
                         }
@@ -1267,7 +1344,7 @@ IOFBInstallMode( IOFBConnectRef connectRef, IODisplayModeID mode,
                          /* && (!connectRef->overrides 
                                     || !CFDictionaryGetValue(connectRef->overrides, CFSTR("trng")))*/
                         {
-                            connectRef->driverModeInfo[i].info.flags |= info->flags;
+							MergeDisplayModeInformation(connectRef, info, &connectRef->driverModeInfo[i].info);
                             connectRef->driverModeInfo[i].info.flags &= maskFlags;
                         }
 
@@ -1351,6 +1428,7 @@ IOFBInstallMode( IOFBConnectRef connectRef, IODisplayModeID mode,
         }
     
         if( info) {
+
             data = CFDataCreate( kCFAllocatorDefault,
                             (UInt8 *) info, sizeof(IODisplayModeInformation));
             if( data) {
@@ -1482,7 +1560,7 @@ IOFBBuildModeList( IOFBConnectRef connectRef, Boolean forConnectChange )
     IOFBDisplayModeDescription * info;
     IOOptionBits                installedFlags;
     IOFBDisplayModeDescription  scaleDesc;
-    Boolean                     scaleCandidate, pruneKeepCurrent;
+    Boolean                     scaleCandidate, scaleVGA, pruneKeepCurrent;
 
     if( connectRef->kernelInfo)
         CFRelease( connectRef->kernelInfo );
@@ -1558,9 +1636,6 @@ IOFBBuildModeList( IOFBConnectRef connectRef, Boolean forConnectChange )
 
     if (connectRef->scalerInfo)
     {
-        // no downscaling
-        connectRef->scalerInfo->scalerFeatures &= ~kIOScaleCanDownSamplePixels;
-
         DEBG(connectRef, "FB scaler info: (%d x %d), features %08x\n",
                 (int) connectRef->scalerInfo->maxHorizontalPixels, 
                 (int) connectRef->scalerInfo->maxVerticalPixels, 
@@ -1779,7 +1854,7 @@ IOFBBuildModeList( IOFBConnectRef connectRef, Boolean forConnectChange )
     // -- install modes, look for scale candidate
 
     bzero( &scaleDesc, sizeof(scaleDesc) );
-    scaleCandidate = false;
+    scaleCandidate = scaleVGA = false;
     pruneKeepCurrent = true;
 
     for( i = 0; i < (modeCount + arbModeCount); i++)
@@ -1801,13 +1876,18 @@ IOFBBuildModeList( IOFBConnectRef connectRef, Boolean forConnectChange )
         if (kDisplayModeValidFlag & info->info.flags)
             pruneKeepCurrent = false;
 
+        if (connectRef->scalerInfo && (kIOFBConnectStateOnline & connectRef->state))
+	    {
+			Boolean ok = IOFBLookScaleBaseMode(connectRef, info, &scaleDesc);
+         	if (CFDictionaryGetValue(connectRef->overrides, CFSTR(kIODisplayIsDigitalKey))) scaleCandidate |= ok;
+	        else scaleVGA |= ok;
+		}
+
+		IOFBSetImageSize(connectRef, info);
+
         IOFBInstallMode( connectRef, mode, info,
                          installedFlags, kNilOptions );
 
-        if ((connectRef->scalerInfo)
-         && (kIOFBConnectStateOnline & connectRef->state)
-         && (CFDictionaryGetValue(connectRef->overrides, CFSTR(kIODisplayIsDigitalKey))) )
-            scaleCandidate |= IOFBLookScaleBaseMode( connectRef, info, &scaleDesc );
     }
 
     if ( (kIOFBConnectStateOnline & connectRef->state)
@@ -1835,13 +1915,15 @@ IOFBBuildModeList( IOFBConnectRef connectRef, Boolean forConnectChange )
                 if (!(kIODetailedTimingValid & info->timingInfo.flags))
                     continue;
                 installedFlags = driverFlags[i];
-
-                *desc = *info;
-                UpdateTimingInfoForTransform(connectRef, desc, kScaleInstallAlways);
-        
-                err = IOFBInstallScaledMode( connectRef, desc, kScaleInstallAlways );
-                if (kIOReturnSuccess != err)
-                    continue;
+                if (!scaleCandidate)
+                {
+                    *desc = *info;
+                    UpdateTimingInfoForTransform(connectRef, desc, kScaleInstallAlways);
+			
+                    err = IOFBInstallScaledMode( connectRef, desc, kScaleInstallAlways );
+                    if (kIOReturnSuccess != err)
+                        continue;
+                }
             }
 
             if (!scaleCandidate && (kIOScaleSwapAxes & connectRef->transform))
@@ -1916,8 +1998,8 @@ IOFBBuildModeList( IOFBConnectRef connectRef, Boolean forConnectChange )
     connectRef->driverModeCount = 0;
 
     // -- scaling
-    if( scaleCandidate )
-        IOFBInstallScaledModes( connectRef, &scaleDesc );
+    if(scaleCandidate || scaleVGA)
+        IOFBInstallScaledModes( connectRef, &scaleDesc, scaleVGA );
 
     if( connectRef->suppressRefresh)
         CFDictionarySetValue(connectRef->kernelInfo, CFSTR("IOFB0Hz"), kCFBooleanTrue);
@@ -2037,14 +2119,14 @@ IOFBUpdateConnectState( IOFBConnectRef connectRef )
 
 IOReturn
 IOAccelReadFramebuffer(io_service_t framebuffer, uint32_t width, uint32_t height, size_t rowBytes,
-                        vm_address_t * result, vm_size_t * bytecount)
+                        mach_vm_address_t * result, mach_vm_size_t * bytecount)
 {
     IOReturn     err;
     io_service_t accelerator;
     UInt32       framebufferIndex;
-    size_t       size = 0;
-    uintptr_t    surfaceID = 155;
-    vm_address_t buffer = 0;
+    mach_vm_size_t    size = 0;
+    uintptr_t         surfaceID = 155;
+    mach_vm_address_t buffer = 0;
     IOAccelConnect                      connect = MACH_PORT_NULL;
     IOAccelDeviceRegion *               region = NULL;
     IOAccelSurfaceInformation           surfaceInfo;
@@ -2081,8 +2163,8 @@ IOAccelReadFramebuffer(io_service_t framebuffer, uint32_t width, uint32_t height
         region->bounds.h = region->rect[0].h = height;
         region->bounds.w = region->rect[0].w = width;
         
-        err = vm_allocate(mach_task_self(), &buffer, size, 
-                          VM_FLAGS_ANYWHERE | VM_MAKE_TAG(VM_MEMORY_COREGRAPHICS_FRAMEBUFFERS));
+        err = mach_vm_allocate(mach_task_self(), &buffer, size, 
+                               VM_FLAGS_ANYWHERE | VM_MAKE_TAG(VM_MEMORY_COREGRAPHICS_FRAMEBUFFERS));
         if (kIOReturnSuccess != err) continue;
     
         err = IOAccelSetSurfaceFramebufferShapeWithBackingAndLength(connect, region,
@@ -2317,6 +2399,8 @@ IOFBRebuild( IOFBConnectRef connectRef, Boolean forConnectChange )
     connectRef->defaultHeight         = 0;
     connectRef->defaultImageWidth     = 0;
     connectRef->defaultImageHeight    = 0;
+    connectRef->displayImageWidth     = 0;
+    connectRef->displayImageHeight    = 0;
 
     connectRef->displayMirror         = false;
 
@@ -2571,7 +2655,8 @@ IOFBGetNotificationMachPort( io_connect_t connect )
 
 kern_return_t
 IOFBDispatchMessageNotification( io_connect_t connect, mach_msg_header_t * message,
-                                 UInt32 version __unused, const IOFBMessageCallbacks * callbacks, void * callbackRef )
+                                 UInt32 version, 
+                                 const IOFBMessageCallbacks * callbacks, void * callbackRef )
 {
     IOFBConnectRef connectRef = IOFBConnectToRef( connect );
     UInt32 value;
@@ -2580,7 +2665,17 @@ IOFBDispatchMessageNotification( io_connect_t connect, mach_msg_header_t * messa
     {
         case 0:
             connectRef->didPowerOff = true;
-            callbacks->WillPowerOff(callbackRef, (void *) (uintptr_t) connect);
+			if ((version >= kIOFBMessageCallbacksVersionCurrent) 
+				&& callbacks->WillPowerOffWithImages)
+			{
+				callbacks->WillPowerOffWithImages(callbackRef, (void *) (uintptr_t) connect,
+													arrayCnt(connectRef->imageBuffers),
+													&connectRef->imageBuffers[0], &connectRef->imageSizes[0]);
+			}
+			else
+			{
+				callbacks->WillPowerOff(callbackRef, (void *) (uintptr_t) connect);
+			}
             break;
 
         case 1:
@@ -2620,16 +2715,18 @@ IOFBAcknowledgePM( io_connect_t connect )
     IODisplayModeID mode;
     IOIndex         depth;
     IOPixelInformation  pixelInfo;
-    vm_address_t        bits = 0;
-    vm_size_t           bytes = 0;
-    uint64_t            inData[] = { 0, 0 };
+	uint32_t            idx;    
 
     if (connectRef->didPowerOff)
     do
     {
         connectRef->didPowerOff = false;
+
+		if (connectRef->imageBuffers[kIOPreviewImageIndexDesktop]) continue;
+
         if(!(kIOFBConnectStateOnline & connectRef->state))
             continue;
+
         err = _IOFBGetAttributeForFramebuffer( connect,
                                                 MACH_PORT_NULL,
                                                 kIOVRAMSaveAttribute, &vramSave );
@@ -2645,20 +2742,36 @@ IOFBAcknowledgePM( io_connect_t connect )
         err = IOAccelReadFramebuffer(connectRef->framebuffer,
                                      pixelInfo.activeWidth, pixelInfo.activeHeight,
                                      pixelInfo.bytesPerRow,
-                                     &bits, &bytes);
+                                     &connectRef->imageBuffers[kIOPreviewImageIndexDesktop],
+                                     &connectRef->imageSizes[kIOPreviewImageIndexDesktop]);
         if (err)
             continue;
-        inData[0] = bits;
-        inData[1] = bytes;
+#if 0
+	{
+    mach_vm_size_t      bytes;
+
+	bytes = connectRef->imageSizes[kIOPreviewImageIndexDesktop];
+	mach_vm_allocate(mach_task_self(), &connectRef->imageBuffers[kIOPreviewImageIndexLockScreen], bytes, 
+		  VM_FLAGS_ANYWHERE | VM_MAKE_TAG(VM_MEMORY_COREGRAPHICS_FRAMEBUFFERS));
+	connectRef->imageSizes[kIOPreviewImageIndexLockScreen] = bytes;
+	bytes >>= 2;
+	while (--bytes) ((uint32_t *)connectRef->imageBuffers[kIOPreviewImageIndexLockScreen])[bytes] = 0xff00ff00;
+	}
+#endif
     }
     while (false);
 
     err = IOConnectCallMethod(connect, 14,         // Index
-                inData, arrayCnt(inData), NULL, 0, // Input
+                &connectRef->imageBuffers[0], 2 * arrayCnt(connectRef->imageBuffers),
+                NULL, 0, // Input
                 NULL, NULL, NULL, NULL);           // Output
 
-    if (bits)
-        (void) vm_deallocate(mach_task_self(), bits, bytes);
+    for (idx = 0; idx < arrayCnt(connectRef->imageBuffers); idx++)
+    {
+	if (!connectRef->imageBuffers[idx]) continue;
+	mach_vm_deallocate(mach_task_self(), connectRef->imageBuffers[idx], connectRef->imageSizes[idx]);
+	connectRef->imageBuffers[idx] = connectRef->imageSizes[idx] = 0;
+    }
 
     return (err);
 }
@@ -2928,7 +3041,7 @@ IOFBLookDefaultDisplayMode( IOFBConnectRef connectRef )
 
         if( (info->nominalWidth < connectRef->defaultMinWidth) || (info->nominalHeight < connectRef->defaultMinHeight))
             rDefault--;
-        else if (!defaultToDependent && !desireHPix && (0 != (info->flags & kDisplayModeDefaultFlag)))
+        else if (!defaultToDependent && (0 != (info->flags & kDisplayModeDefaultFlag)))
         {
             rDefault++;
             if (mode & 0x80000000)
@@ -3025,9 +3138,10 @@ IOFBGetDefaultDisplayMode( io_connect_t connect,
 }
 
 
-
 static Boolean
-IOFBCheckScaleDupMode( IOFBConnectRef connectRef, IOFBDisplayModeDescription * desc )
+IOFBCheckScaleDupMode( IOFBConnectRef connectRef, 
+		       IOFBDisplayModeDescription * desc,
+		       IOOptionBits installFlags )
 {
     CFDictionaryRef            dict;
     CFDataRef                  data;
@@ -3035,36 +3149,37 @@ IOFBCheckScaleDupMode( IOFBConnectRef connectRef, IOFBDisplayModeDescription * d
     IODisplayModeInformation * info;
     Boolean                    dup = false;
 
+    if ((0 == (kMirrorOnlyFlags & desc->info.flags)) 
+    	&& (kScaleInstallAlways & installFlags))    return (false);
+
     modeCount = CFArrayGetCount( connectRef->modesArray );
 
     for( i = 0; (i < modeCount) && !dup; i++ )
     {
         dict = CFArrayGetValueAtIndex( connectRef->modesArray, i );
-        if( !dict)
-            continue;
+        if( !dict) continue;
         data = (CFDataRef) CFDictionaryGetValue( dict, CFSTR(kIOFBModeDMKey) );
-        if( !data)
-            continue;
+        if( !data) continue;
         info = (IODisplayModeInformation *) CFDataGetBytePtr(data);
     
         do
         {
-            if( 0 == (kDisplayModeValidFlag & info->flags))
-                continue;
-            if( kDisplayModeBuiltInFlag & info->flags)
-                continue;
-            if( kDisplayModeStretchedFlag & (info->flags ^ desc->info.flags))
-                continue;
+            if (0 == (kDisplayModeValidFlag & info->flags))                   continue;
+            if (kDisplayModeBuiltInFlag & info->flags)                        continue;
 
-            if( info->nominalWidth < (desc->info.nominalWidth - 20))
-                continue;
-            if( info->nominalWidth > (desc->info.nominalWidth + 20))
-                continue;
-            if( info->nominalHeight < (desc->info.nominalHeight - 20))
-                continue;
-            if( info->nominalHeight > (desc->info.nominalHeight + 20))
-                continue;
-    
+			if (kMirrorOnlyFlags & desc->info.flags)
+			{
+				if (info->nominalWidth  != desc->info.nominalWidth)  continue;
+				if (info->nominalHeight != desc->info.nominalHeight) continue;
+			}
+			else
+			{
+				if (kDisplayModeStretchedFlag & (info->flags ^ desc->info.flags)) continue;
+				if (info->nominalWidth < (desc->info.nominalWidth - 20))   continue;
+				if (info->nominalWidth > (desc->info.nominalWidth + 20))   continue;
+				if (info->nominalHeight < (desc->info.nominalHeight - 20)) continue;
+				if (info->nominalHeight > (desc->info.nominalHeight + 20)) continue;
+			}
             dup = true;
         }
         while( false );
@@ -3082,6 +3197,9 @@ IOFBInstallScaledMode( IOFBConnectRef connectRef,
     IOFBDisplayModeDescription __desc;
     UInt32 insetH, insetV, width, height, swap;
     kern_return_t kr;
+
+	__desc = *_desc;
+	desc = &__desc;
 
     kr = IOFBDriverPreflight(connectRef, desc);
 
@@ -3106,8 +3224,6 @@ IOFBInstallScaledMode( IOFBConnectRef connectRef,
             if ((width == desc->timingInfo.detailedInfo.v2.horizontalActive)
              && (height == desc->timingInfo.detailedInfo.v2.verticalActive))
             {
-                __desc = *_desc;
-                desc = &__desc;
                 if (kIOScaleSwapAxes & desc->timingInfo.detailedInfo.v2.scalerFlags)
                 {
                     swap = insetH;
@@ -3124,8 +3240,10 @@ IOFBInstallScaledMode( IOFBConnectRef connectRef,
     if (kIOReturnSuccess != kr)
         return (kr);
 
-    if( (0 == (kScaleInstallAlways & installFlags)) && IOFBCheckScaleDupMode( connectRef, desc))
+    if (IOFBCheckScaleDupMode( connectRef, desc, installFlags ))
         return( 9 );
+
+    IOFBSetImageSize(connectRef, desc);
 
     return(IOFBInstallMode( connectRef, 0xffffffff, desc, 0, kIOFBScaledMode));
 }
@@ -3200,7 +3318,8 @@ _IOFBInstallScaledResolution( IOFBConnectRef connectRef,
                                 IOFBDisplayModeDescription * baseDesc,
                                 float nativeWidth, float nativeHeight,
                                 float width, float height,
-                                IOOptionBits flags )
+                                IOOptionBits flags,
+                                uint32_t setModeFlags, uint32_t clrModeFlags )
 {
     IOFBDisplayModeDescription newDesc;
     IOFBDisplayModeDescription * desc = &newDesc;
@@ -3275,12 +3394,13 @@ _IOFBInstallScaledResolution( IOFBConnectRef connectRef,
 
     desc->info.flags = (desc->info.flags & ~kDisplayModeSafetyFlags)
                         | kDisplayModeValidFlag | kDisplayModeSafeFlag;
-    if (kIOScaleCanDownSamplePixels & need)
-        desc->info.flags |= kDisplayModeValidForMirroringFlag;
 
     if( aspectDiff > 1.03125)
         desc->info.flags |= kDisplayModeNotPresetFlag;
 
+	desc->info.flags |= setModeFlags;
+	desc->info.flags &= ~clrModeFlags;
+	
     if( 0 == (kIOScaleStretchOnly & connectRef->scalerInfo->scalerFeatures))
     {
         IOFBInstallScaledMode( connectRef, desc, flags );
@@ -3289,6 +3409,7 @@ _IOFBInstallScaledResolution( IOFBConnectRef connectRef,
     if (okToStretch)
     {
         desc->info.flags |= kDisplayModeStretchedFlag;
+		desc->info.flags &= ~clrModeFlags;
         desc->timingInfo.detailedInfo.v2.scalerFlags |= kIOScaleStretchToFit;
         IOFBInstallScaledMode( connectRef, desc, flags );
     }
@@ -3301,11 +3422,13 @@ IOFBInstallScaledResolution( IOFBConnectRef connectRef,
                        IOFBDisplayModeDescription * desc,
                        float nativeWidth, float nativeHeight,
                        float width, float height,
-                       IOOptionBits flags )
+                       IOOptionBits flags,
+					   uint32_t setModeFlags, uint32_t clrModeFlags )
 {
     int diag1, diag2;
 
-    diag1 = _IOFBInstallScaledResolution(connectRef, desc, nativeWidth, nativeHeight, width, height, flags);
+    diag1 = _IOFBInstallScaledResolution(connectRef, desc, nativeWidth, nativeHeight, width, height,
+    												flags, setModeFlags, clrModeFlags);
     DEBG(connectRef, "(%d) %f x %f, %08x\n", diag1, width, height, (int) flags);
 
     if ((kIOFBSwapAxes | kIOScaleSwapAxes) & connectRef->transform)
@@ -3313,7 +3436,8 @@ IOFBInstallScaledResolution( IOFBConnectRef connectRef,
         if (ratioOver(width / height, 4.0 / 3.0) <= 1.03125)
         {
             flags |= kScaleInstallNoResTransform;
-            diag2 = _IOFBInstallScaledResolution(connectRef, desc, nativeWidth, nativeHeight, width, height, flags);
+            diag2 = _IOFBInstallScaledResolution(connectRef, desc, nativeWidth, nativeHeight, width, height,
+            										flags, setModeFlags, clrModeFlags);
             DEBG(connectRef, "(%d) %f x %f, %08x\n", diag2, width, height, (int) flags );
         }
     }
@@ -3409,95 +3533,139 @@ IOFBLookScaleBaseMode( IOFBConnectRef connectRef, IOFBDisplayModeDescription * s
 }
 
 static kern_return_t
-IOFBInstallScaledModes( IOFBConnectRef connectRef, IOFBDisplayModeDescription * scaleBase )
+IOFBInstallScaledModes( IOFBConnectRef connectRef, IOFBDisplayModeDescription * scaleBase,
+						Boolean onlyMirrorModes )
 {
     IOReturn                    err = kIOReturnSuccess;
-    CFDictionaryRef             ovr;
-    CFArrayRef                  array, array1, array2 = 0;
-    CFMutableArrayRef           copyArray = 0;
-    CFIndex                     count, ovrCount = 0;
-    SInt32                      i;
+	IOFBConnectRef              next;
+    CFMutableArrayRef           arrays;
+    CFArrayRef                  iogArray = NULL;
+    CFArrayRef                  displayArray = NULL;
+    CFArrayRef                  otherArray;
+    CFIndex                     count, arraysCount;
+    SInt32                      i, arraysIdx;
     float                       h, v, nh, nv;
-    Boolean                     displayNot4By3;
+    Boolean                     displayNot4By3, displayNot16By9;
 
-    if( kOvrFlagDisableScaling & connectRef->ovrFlags)
-        return( kIOReturnSuccess );
+    if( !connectRef->scalerInfo) return( kIOReturnSuccess );
+    if( kOvrFlagDisableScaling & connectRef->ovrFlags) return( kIOReturnSuccess );
 
-    array1 = CFDictionaryGetValue( gIOGraphicsProperties, CFSTR("scale-resolutions") );
-    if( !array1)
-        return( kIOReturnSuccess );
+	arrays = CFArrayCreateMutable( kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks );
+    if (!arrays) return( kIOReturnNoMemory );
 
-    ovr = connectRef->overrides;
-    if( ovr)
-        array2 = CFDictionaryGetValue( ovr, CFSTR("scale-resolutions") );
-    if( array2)
-        copyArray = CFArrayCreateMutableCopy( kCFAllocatorDefault, 0, array2 );
-    if( copyArray) {
-        ovrCount = CFArrayGetCount(copyArray);
-        if( 0 == (kOvrFlagDisableGenerated & connectRef->ovrFlags))
-            CFArrayAppendArray( copyArray, array1, CFRangeMake( 0, CFArrayGetCount(array1) ));
-        array = copyArray;
-    } else
-        array = CFRetain(array1);
+	next = connectRef;
+	do {
+		if (next->overrides) {
+			otherArray = CFDictionaryGetValue( next->overrides, CFSTR("scale-resolutions") );
+			if (otherArray) CFArrayAppendValue( arrays, otherArray );
+			if (next == connectRef) displayArray = otherArray;
+		}
+		next = next->nextDependent;
+	} while( next && (next != connectRef) );
 
-    if( !connectRef->scalerInfo)
-        return( kIOReturnSuccess );
+	iogArray = CFDictionaryGetValue( gIOGraphicsProperties, CFSTR("scale-resolutions") );
+	if( iogArray)
+		CFArrayAppendValue(arrays, iogArray);
 
     nh = (float) scaleBase->timingInfo.detailedInfo.v2.horizontalActive;
     nv = (float) scaleBase->timingInfo.detailedInfo.v2.verticalActive;
 
     DEBG(connectRef, "Scaling mode (%f,%f)\n", nh, nv);
 
-    if ((nh <= (2 * kAquaMinWidth)) || (nv >= (2 * kAquaMinHeight)))
-        IOFBInstallScaledResolution( connectRef, scaleBase, nh, nv, nh / 2.0, nv / 2.0, false );
+    if (!onlyMirrorModes
+     && ((nh <= (2 * kAquaMinWidth)) || (nv >= (2 * kAquaMinHeight))))
+        IOFBInstallScaledResolution( connectRef, scaleBase, nh, nv, nh / 2.0, nv / 2.0, 0, 0, 0 );
 
-    displayNot4By3 = (ratioOver(nh / nv, 4.0 / 3.0) > 1.03125);
+    displayNot4By3  = (ratioOver(nh / nv, 4.0 / 3.0) > 1.03125);
+    displayNot16By9 = (ratioOver(nh / nv, 16.0 / 9.0) > 1.03125);
 
-    count = CFArrayGetCount(array);
-    for( i = 0; i < count; i++) {
-        CFTypeRef obj;
-        IOReturn r;
-        IOOptionBits flags;
+    arraysCount = CFArrayGetCount(arrays);
+    for(arraysIdx = 0; arraysIdx < arraysCount; arraysIdx++)
+    {
+    	CFArrayRef array = CFArrayGetValueAtIndex(arrays, arraysIdx);
+		count = CFArrayGetCount(array);
+		for( i = 0; i < count; i++) {
+			CFTypeRef obj;
+			IOReturn r;
+			IOOptionBits flags;
+			uint32_t setModeFlags = 0;
+			uint32_t clrModeFlags = 0;
+	
+			obj = CFArrayGetValueAtIndex(array, i);
+			if( CFNumberGetTypeID() == CFGetTypeID(obj)) {
+				SInt32      value;
+				CFNumberGetValue( (CFNumberRef) obj, kCFNumberSInt32Type, &value );
+				h     = (float)(value & 0xffff);
+				v     = (float)(value >> 16);
+	
+				flags = (array == displayArray) ? (kScaleInstallAlways | kScaleInstallNoStretch) : 0;
+	
+			} else if( CFDataGetTypeID() == CFGetTypeID(obj)) {
+				UInt32 * value = (UInt32 *) CFDataGetBytePtr((CFDataRef) obj);
+				h     = (float) OSReadBigInt32(&value[0], 0);
+				v     = (float) OSReadBigInt32(&value[1], 0);
+				flags =         OSReadBigInt32(&value[2], 0);
+				if (CFDataGetLength((CFDataRef) obj) >= (CFIndex)(4 * sizeof(*value))) {
+					setModeFlags = OSReadBigInt32(&value[3], 0);
+				}
+				if (CFDataGetLength((CFDataRef) obj) >= (CFIndex)(5 * sizeof(*value))) {
+					clrModeFlags = OSReadBigInt32(&value[4], 0);
+				}
+	
+			} else
+				continue;
 
-        obj = CFArrayGetValueAtIndex(array, i);
-        if( CFNumberGetTypeID() == CFGetTypeID(obj)) {
-            SInt32      value;
-            CFNumberGetValue( (CFNumberRef) obj, kCFNumberSInt32Type, &value );
-            h     = (float)(value & 0xffff);
-            v     = (float)(value >> 16);
+			DEBG(connectRef, "Scaling to (%f,%f), 0x%x, |0x%x, &0x%x\n", h, v, (int) flags, setModeFlags, clrModeFlags);
 
-            flags = (i < ovrCount) ? kScaleInstallAlways | kScaleInstallNoStretch : 0;
+			bool downscaleOk = ((array != iogArray)
+						      || (kMirrorOnlyFlags & setModeFlags));
 
-        } else if( CFDataGetTypeID() == CFGetTypeID(obj)) {
-            UInt32 * value = (UInt32 *) CFDataGetBytePtr((CFDataRef) obj);
-            h     = (float) OSReadBigInt32(&value[0], 0);
-            v     = (float) OSReadBigInt32(&value[1], 0);
-            flags =         OSReadBigInt32(&value[2], 0);
+			if ((kOvrFlagDisableGenerated & connectRef->ovrFlags) && (array == iogArray)) {
+				if ((0 == (kMirrorOnlyFlags & setModeFlags))) continue;
+			}
 
-        } else
-            continue;
-        
-        if( v) {
+			if ((array == iogArray) || (array == displayArray)) {
+				if (onlyMirrorModes && (0 == (kMirrorOnlyFlags &setModeFlags))) continue;
+			} else {
+				if (!(kScaleInstallMirrorDeps & flags)) continue;
+			}
 
-            if( (h != (nh / 2.0)) || (v != (nv / 2.0))) {
-                r = IOFBInstallScaledResolution( connectRef, scaleBase, 
-                                                    nh, nv, h, v, flags );
-            }
+			// downsampled modes from override only
+			if ((!downscaleOk) && (h > nh)) continue;
+		   
+			if( v) {
+				if ((!downscaleOk) && (v > nv)) continue;
+				if( (h != (nh / 2.0)) || (v != (nv / 2.0))) {
+					r = IOFBInstallScaledResolution( connectRef, scaleBase, 
+														nh, nv, h, v, flags, setModeFlags, clrModeFlags );
+				}
+			} else {
+				if( displayNot4By3) {
+					v = (h * 3.0) / 4.0;
+					if ((downscaleOk) || (v <= nv)) {
+						r = IOFBInstallScaledResolution( connectRef, scaleBase,
+															nh, nv, h, v, flags, setModeFlags, clrModeFlags );
+					}
+				}
+				if((h != nh) && (h != (nh / 2.0))) {
+					v = (h * nv) / nh;
+					if ((downscaleOk) || (v <= nv)) {
+						r = IOFBInstallScaledResolution( connectRef, scaleBase,
+														nh, nv, h, v, flags, setModeFlags, clrModeFlags );
+					}
+				}
+			}
+		}
+	}
 
-        } else {
+	if( displayNot16By9) {
+		h = nh;
+		v = (h * 9.0) / 16.0;
+		IOFBInstallScaledResolution( connectRef, scaleBase,
+												nh, nv, h, v, kScaleInstallAlways, kDisplayModeValidForAirPlayFlag, 0 );
+	}
 
-            if( displayNot4By3) {
-                r = IOFBInstallScaledResolution( connectRef, scaleBase,
-                                                    nh, nv, h, (h * 3.0) / 4.0, flags );
-            }
-            if((h != nh) && (h != (nh / 2.0))) {
-                r = IOFBInstallScaledResolution( connectRef, scaleBase,
-                                                    nh, nv, h, (h * nv) / nh, flags );
-            }
-        }
-    }
-
-    CFRelease( array );
+    CFRelease( arrays );
 
     return( err );
 }
@@ -3557,7 +3725,8 @@ IOFBDriverPreflight(IOFBConnectRef connectRef, IOFBDisplayModeDescription * desc
         desc->info.nominalHeight = descOut.info.nominalHeight;
 //      desc->info.refreshRate   = descOut.info.refreshRate;
         desc->info.maxDepthIndex = descOut.info.maxDepthIndex;
-//      desc->info.flags         = descOut.info.flags;
+        desc->info.flags         = desc->info.flags
+        			 | (kDisplayModeAcceleratorBackedFlag & descOut.info.flags);
 //      desc->info.reserved      = descOut.info.reserved;
     }
 
@@ -3653,6 +3822,10 @@ IOFBAdjustDisplayModeInformation(
         if( !ovr)
             continue;
 
+        edidData = CFDictionaryGetValue(ovr, CFSTR(kIODisplayEDIDKey));
+        if( edidData)
+            edid = (EDID *) CFDataGetBytePtr(edidData);
+
         addSafeFlag = ((kAddSafeFlags == (kAddSafeFlags & allInfo->info.flags)) && !connectRef->hasCEAExt);
     
         if((kDisplayModeBuiltInFlag & allInfo->info.flags) && !addSafeFlag)
@@ -3677,7 +3850,7 @@ IOFBAdjustDisplayModeInformation(
             continue;
 
         // 2488698, 3052614
-        if( (appleTimingID == kIOTimingIDApple_FixedRateLCD)    
+        if( appleTimingID == kIOTimingIDApple_FixedRateLCD
             /*&& !CFDictionaryGetValue( ovr, CFSTR(kIODisplayIsDigitalKey))*/)
             continue;
 
@@ -3690,10 +3863,6 @@ IOFBAdjustDisplayModeInformation(
         if( kDisplayModeNeverShowFlag & allInfo->info.flags)
             continue;
 #endif
-    
-        edidData = CFDictionaryGetValue(ovr, CFSTR(kIODisplayEDIDKey));
-        if( edidData)
-            edid = (EDID *) CFDataGetBytePtr(edidData);
 
         if( (kDisplayAppleVendorID == connectRef->displayVendor)
             && edid && edid->version
@@ -3730,24 +3899,26 @@ IOFBAdjustDisplayModeInformation(
 
     } while( false );
 
+    if ((kDisplayModeValidFlag & allInfo->info.flags) 
+    	&& !edid 
+    	&& (kIOFBConnectStateOnline & connectRef->state))
+    {
+    	allInfo->info.flags |= kDisplayModeAlwaysShowFlag;
+    }
+
     return( kIOReturnSuccess );
 }
 
 kern_return_t
-IOFBGetDisplayModeInformation( io_connect_t connect,
+_IOFBGetDisplayModeInformation(IOFBConnectRef connectRef,
         IODisplayModeID         displayMode,
         IODisplayModeInformation * out )
 {
     kern_return_t              kr = kIOReturnSuccess;
-    IOFBConnectRef             connectRef;
     CFDataRef                  data;
     CFMutableDataRef           piData;
     CFMutableDictionaryRef     dict;
     IODisplayModeInformation * info;
-
-    connectRef = IOFBConnectToRef( connect);
-    if( !connectRef)
-        return( kIOReturnBadArgument );
 
     dict = (CFMutableDictionaryRef) CFDictionaryGetValue( connectRef->modes,
                                 (const void *) (uintptr_t) (UInt32) displayMode );
@@ -3767,7 +3938,7 @@ IOFBGetDisplayModeInformation( io_connect_t connect,
         else
             out->flags &= ~kDisplayModeDefaultFlag;
 
-        if (kDisplayModeValidForMirroringFlag & out->flags)
+        if (kMirrorOnlyFlags & out->flags)
             out->flags &= ~kDisplayModeValidFlag;
 
         if(true && connectRef->suppressRefresh)
@@ -3821,6 +3992,53 @@ IOFBGetDisplayModeInformation( io_connect_t connect,
     }
 
     return( kr );
+}
+kern_return_t
+IOFBGetDisplayModeInformation( io_connect_t connect,
+        IODisplayModeID         displayMode,
+        IODisplayModeInformation * out )
+{
+    IOFBConnectRef connectRef;
+
+    connectRef = IOFBConnectToRef( connect);
+    if( !connectRef)
+        return( kIOReturnBadArgument );
+
+	return (_IOFBGetDisplayModeInformation(connectRef, displayMode, out));
+}
+
+
+kern_return_t
+IOFBGetDisplayModeTimingInformation( io_connect_t connect,
+        IODisplayModeID               displayMode,
+        IODetailedTimingInformation * out )
+{
+    kern_return_t                 kr = kIOReturnSuccess;
+    IOFBConnectRef                connectRef;
+    CFDataRef                     data;
+    CFMutableDictionaryRef        dict;
+    IODetailedTimingInformation * info;
+
+    connectRef = IOFBConnectToRef( connect);
+    if( !connectRef)
+        return( kIOReturnBadArgument );
+
+    dict = (CFMutableDictionaryRef) CFDictionaryGetValue( connectRef->modes,
+                                (const void *) (uintptr_t) (UInt32) displayMode );
+    if( dict && (data = CFDictionaryGetValue( dict, CFSTR(kIOFBModeTMKey) )))
+        info = (IODetailedTimingInformation *) CFDataGetBytePtr(data);
+    else
+    {
+        DEBG(connectRef, "invalid mode 0x%x\n", (int) displayMode);
+        kr = kIOReturnBadArgument;
+    }
+
+    if( kr == kIOReturnSuccess)
+    {
+        *out = *info;
+	}
+
+	return (kr);
 }
 
 __private_extern__
@@ -4011,7 +4229,7 @@ IOFramebufferServerOpen( mach_port_t connect )
         || (connectRef->firstBoot && (kDisplayVendorIDUnknown  != connectRef->displayVendor)
                       && (kDisplayProductIDGeneric != connectRef->displayProduct))
         || (startMode == (IODisplayModeID) kIODisplayModeIDBootProgrammable)
-        || (0 == (startFlags & (kDisplayModeValidFlag | kDisplayModeValidForMirroringFlag))))
+        || (0 == (startFlags & (kDisplayModeValidFlag | kMirrorOnlyFlags))))
     {
         // go to default
         if( connectRef->defaultMode) {
@@ -4137,7 +4355,7 @@ IOFBGetPixelInformation( io_connect_t connect,
 {
     IOFBConnectRef  connectRef;
     CFDictionaryRef dict;
-    CFDataRef       data;
+    CFDataRef       data = NULL;
     size_t          offset;
 
     connectRef = IOFBConnectToRef(connect);
@@ -4145,7 +4363,13 @@ IOFBGetPixelInformation( io_connect_t connect,
         return( kIOReturnBadArgument );
 
     dict = CFDictionaryGetValue( connectRef->modes, (const void *) (uintptr_t) (UInt32) displayMode );
-    if (!dict || !(data = CFDictionaryGetValue(dict, CFSTR(kIOFBModePIKey))))
+    if (dict && !(data = CFDictionaryGetValue(dict, CFSTR(kIOFBModePIKey))))
+    {
+		IODisplayModeInformation modeInfo;
+		_IOFBGetDisplayModeInformation(connectRef, displayMode, &modeInfo);
+		data = CFDictionaryGetValue(dict, CFSTR(kIOFBModePIKey));	
+	}
+    if (!data)
     {
         return (_IOFBGetPixelInformation(connectRef, displayMode, depth,
                                                aperture, pixelInfo));

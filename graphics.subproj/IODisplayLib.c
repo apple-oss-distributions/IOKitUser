@@ -196,7 +196,7 @@ static const CEAVideoFormatData CEAVideoFormats[MAX_CEA861_VIDEO_FORMATS+1] =
 // 59 - 720(1440)x480i
 { false, 1440, 480, 1, 1716, 276, 525, 22.5, 108.108, 38, 4, 114, 0, 4, 3, 15, 0 },
 // 60 - 1280x720p
-{ true, 1280, 720, 0, 4125, 2845, 750, 30, 74.25, 2585, 40, 220, 1, 5, 5, 20, 1 },
+{ true, 1280, 720, 0, 3300, 2020, 750, 30, 59.4, 1760, 40, 220, 1, 5, 5, 20, 1 },
 // 61 - 1280x720p
 { true, 1280, 720, 0, 3960, 2680, 750, 30, 74.25, 2420, 40, 220, 1, 5, 5, 20, 1 },
 // 62 - 1280x720p
@@ -222,7 +222,9 @@ writePlist( const char * path, CFMutableDictionaryRef dict, UInt32 key __unused 
 static CFMutableDictionaryRef
 IODisplayCreateOverrides( IOOptionBits options, 
                             IODisplayVendorID vendor, IODisplayProductID product,
-                            UInt32 serialNumber __unused, CFAbsoluteTime manufactureDate __unused,
+                            UInt32 serialNumber __unused, 
+                            uint32_t manufactureYear,
+                            uint32_t manufactureWeek,
                             Boolean isDigital )
 {
 
@@ -238,7 +240,19 @@ IODisplayCreateOverrides( IOOptionBits options,
                         (unsigned) vendor, (unsigned) product );
     
         obj = readPlist( path, ((vendor & 0xffff) << 16) | (product & 0xffff) );
-        if( obj) {
+
+	if ((!obj) && manufactureYear && manufactureWeek)
+	{
+	    snprintf( path, sizeof(path), "/System/Library/Displays/Overrides"
+			    "/" kDisplayVendorID "-%x"
+			    "/" kDisplayYearOfManufacture "-%d"
+			    "-" kDisplayWeekOfManufacture "-%d",
+			    (unsigned) vendor,
+			    manufactureYear, manufactureWeek );
+	    obj = readPlist( path, ((vendor & 0xffff) << 16) | (product & 0xffff) );
+	}
+        if (obj)
+        {
             if( CFDictionaryGetTypeID() == CFGetTypeID( obj ))
             {
                 dict = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, obj);
@@ -320,7 +334,8 @@ IODisplayCreateOverrides( IOOptionBits options,
 static void
 EDIDInfo( struct EDID * edid,
             IODisplayVendorID * vendor, IODisplayProductID * product,
-            UInt32 * serialNumber, CFAbsoluteTime * manufactureDate,
+            UInt32 * serialNumber,
+            uint32_t * manufactureYear, uint32_t * manufactureWeek,
             Boolean * isDigital )
 {
     SInt32              sint;
@@ -342,22 +357,8 @@ EDIDInfo( struct EDID * edid,
         *serialNumber = sint;
     }
 
-    if( false && manufactureDate ) {
-
-        CFGregorianDate gDate;
-        CFTimeZoneRef   tz;
-
-        gDate.year      = edid->yearOfManufacture + 1990;
-        gDate.month     = 0;
-        gDate.day       = edid->weekOfManufacture * 7;
-        gDate.hour      = 0;
-        gDate.minute    = 0;
-        gDate.second    = 0.0;
-
-        tz = CFTimeZoneCopySystem();
-        *manufactureDate = CFGregorianDateGetAbsoluteTime( gDate, tz);
-        CFRelease(tz);
-    }
+    if (manufactureYear) *manufactureYear = edid->yearOfManufacture + 1990;
+    if (manufactureWeek) *manufactureWeek = edid->weekOfManufacture;
 }
 
 __private_extern__ Boolean
@@ -1647,13 +1648,11 @@ IOCheckTimingWithDisplay( IOFBConnectRef connectRef,
 static kern_return_t
 InstallTiming( IOFBConnectRef                connectRef, 
                 IOFBDisplayModeDescription * desc,
-                IOOptionBits                 dmFlags,
                 IOOptionBits                 modeGenFlags )
 {
     IOReturn                    err;
+    IOOptionBits                dmFlags;
     IOTimingInformation *       timing = &desc->timingInfo;
-
-    bzero(&desc->info, sizeof(desc->info));
 
     if (connectRef->dualLinkCrossover)
     {
@@ -1683,6 +1682,8 @@ InstallTiming( IOFBConnectRef                connectRef,
     err = IOCheckTimingWithDisplay( connectRef, desc, modeGenFlags );
     if (kIOReturnUnsupportedMode == err)
         return( err );
+
+	dmFlags = desc->info.flags;
 
     if (0 == ((kIOFBEDIDStdEstMode | kIOFBEDIDDetailedMode) & modeGenFlags))
     {
@@ -1740,8 +1741,9 @@ InstallFromCEAShortVideoDesc( IOFBConnectRef connectRef, UInt8 * data )
             flags = kDisplayModeValidFlag | kDisplayModeSafeFlag;
             if(false && connectRef->hasHDMI && (data[offset] & 0x80))
                 flags |= kDisplayModeDefaultFlag;
-    
-            err = InstallTiming( connectRef, &modeDesc, flags, kIOFBEDIDDetailedMode );
+
+            modeDesc.info.flags = flags;
+            err = InstallTiming( connectRef, &modeDesc, kIOFBEDIDDetailedMode );
         }
         offset++;
     }
@@ -1770,6 +1772,7 @@ InstallFromEDIDDesc( IOFBConnectRef connectRef,
         && !bcmp(desc, &edid->descriptors[connectRef->defaultIndex].timing, 
         sizeof(EDIDDetailedTimingDesc)))
     {
+        DEBG(connectRef, "edid default\n");
         dmFlags |= kDisplayModeDefaultFlag;
     }
     if (kIOInterlacedCEATiming & timing->detailedInfo.v2.signalConfig)
@@ -1851,16 +1854,46 @@ InstallFromEDIDDesc( IOFBConnectRef connectRef,
 #endif
     }
 
+	uint16_t imageWidth = desc->horizImageSize    | ((desc->imageSizeHigh & 0xf0) << 4);
+	uint16_t imageHeight = desc->verticalImageSize | ((desc->imageSizeHigh & 0x0f) << 8);
+
+	// sanity checks against display size
+	if (imageWidth && connectRef->displayImageWidth)
+	{
+		if ((imageWidth < (connectRef->displayImageWidth / 2))
+	     || (imageWidth > (connectRef->displayImageWidth + 9)))
+		{
+			imageWidth = 0;
+		}
+	}
+	if (imageHeight && connectRef->displayImageHeight)
+	{
+		if ((imageHeight < (connectRef->displayImageHeight / 2))
+	     || (imageHeight > (connectRef->displayImageHeight + 9)))
+		{
+			imageHeight = 0;
+		}
+	}
+
+	if ((!imageWidth) || (!imageHeight)) imageWidth = imageHeight = 0;
+
     if (!connectRef->defaultWidth)
     {
+    	// this mode is default
         connectRef->defaultWidth       = timing->detailedInfo.v2.horizontalActive;
         connectRef->defaultHeight      = timing->detailedInfo.v2.verticalActive;
-        connectRef->defaultImageWidth  = desc->horizImageSize    | ((desc->imageSizeHigh & 0xf0) << 4);
-        connectRef->defaultImageHeight = desc->verticalImageSize | ((desc->imageSizeHigh & 0x0f) << 8);
+        connectRef->defaultImageWidth  = imageWidth;
+        connectRef->defaultImageHeight = imageHeight;
+		if (!imageWidth)
+		{
+			imageWidth  = connectRef->displayImageWidth;
+			imageHeight = connectRef->displayImageHeight;
+		}
     }
-
-    err = InstallTiming( connectRef, &modeDesc,
-                            dmFlags, kIOFBEDIDDetailedMode );
+	modeDesc.info.imageWidth  = imageWidth;
+	modeDesc.info.imageHeight = imageHeight;
+	modeDesc.info.flags       = dmFlags;
+    err = InstallTiming( connectRef, &modeDesc, kIOFBEDIDDetailedMode );
 
     return( err );
 }
@@ -1887,9 +1920,8 @@ InstallFromTimingOverride( IOFBConnectRef connectRef,
         connectRef->defaultImageWidth  = timing->detailedInfo.v2.horizontalActive;
         connectRef->defaultImageHeight = timing->detailedInfo.v2.verticalActive;
     }
-    err = InstallTiming( connectRef, &modeDesc,
-                            dmFlags,
-                            kIOFBEDIDDetailedMode );
+	modeDesc.info.flags = dmFlags;
+    err = InstallTiming( connectRef, &modeDesc, kIOFBEDIDDetailedMode );
 
     return( err );
 }
@@ -1963,8 +1995,8 @@ InstallTimingForResolution( IOFBConnectRef connectRef, EDID * edid,
                 continue;
             }
         }
-    
-        err = InstallTiming( connectRef, &modeDesc, dmFlags, modeGenFlags );
+		modeDesc.info.flags = dmFlags;
+        err = InstallTiming( connectRef, &modeDesc, modeGenFlags );
     }
     while (false);
 
@@ -2485,12 +2517,14 @@ InstallCEA861EXTColor( IOFBConnectRef connectRef, EDID * edid __unused, CEA861EX
                     uint8_t byte;
                     byte = ext->data[index+6];
                     depths = kIODisplayRGBColorComponentBits8;
+#if 0
                     if (kHDMISupportFlagDC30 & byte)
                         depths |= kIODisplayRGBColorComponentBits10;
                     if (kHDMISupportFlagDC36 & byte)
                         depths |= kIODisplayRGBColorComponentBits12;
                     if (kHDMISupportFlagDC48 & byte)
                         depths |= kIODisplayRGBColorComponentBits16;
+#endif
                     if (kHDMISupportFlagDCY444 & byte)
                         depths |= (depths * kIODisplayYCbCr444ColorComponentBits6);
                     connectRef->supportedComponentDepths[kAllVendors] |= depths;
@@ -2507,23 +2541,6 @@ InstallCEA861EXT( IOFBConnectRef connectRef, EDID * edid, CEA861EXT * ext, Boole
 {
     IOReturn err;
     IOByteCount offset = ext->detailedTimingsOffset;
-
-    enum {
-        // flags
-        kCEASupportUnderscan    = 0x80,
-        kCEASupportBasicAudio   = 0x40,
-        kCEASupportYCbCr444     = 0x20,
-        kCEASupportYCbCr422     = 0x10,
-        kCEASupportNativeCount  = 0x0F,
-    };
-    enum {
-        kHDMISupportFlagAI      = 0x80,
-        kHDMISupportFlagDC48    = 0x40,
-        kHDMISupportFlagDC36    = 0x20,
-        kHDMISupportFlagDC30    = 0x10,
-        kHDMISupportFlagDCY444  = 0x08,
-        kHDMISupportFlagDVIDual = 0x01,
-    };
 
     connectRef->useScalerUnderscan = (connectRef->scalerInfo 
         && (kIOScaleCanSupportInset & connectRef->scalerInfo->scalerFeatures));
@@ -2565,18 +2582,18 @@ InstallCEA861EXT( IOFBConnectRef connectRef, EDID * edid, CEA861EXT * ext, Boole
         }
     }    
 
-    if (!installModes)
-    {
-        InstallCEA861EXTColor(connectRef, edid, ext);
-        return;
-    }
-
     if ((1 == (kCEASupportNativeCount & ext->flags))
         && (kDisplayAppleVendorID == connectRef->displayVendor))
     {
         connectRef->defaultOnly = true;
     }
-        
+
+    if (!installModes)
+    {
+        InstallCEA861EXTColor(connectRef, edid, ext);
+        return;
+    }
+       
     // Process the CEA Detailed Timing Descriptor.
     while (offset <= (sizeof(ext->data) - sizeof(EDIDDetailedTimingDesc)))
     {
@@ -2733,6 +2750,9 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
         DEBG(connectRef, "EDID default idx %d, only %d\n",
                 connectRef->defaultIndex, connectRef->defaultOnly);
 
+        connectRef->displayImageWidth  = edid->displayParams[1] * 10;
+        connectRef->displayImageHeight = edid->displayParams[2] * 10;
+
         uint8_t videoInput = edid->displayParams[0];
         if ((0x80 & videoInput) && ((edid->version > 1) || (edid->revision >= 4)))
         {
@@ -2802,12 +2822,6 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
         // send display attributes
         IOFBSetKernelDisplayConfig(connectRef);
         
-        count = CFDataGetLength(edidData);
-        if ((size_t) count > sizeof(EDID))
-        {
-            LookExtensions(connectRef, edid, (UInt8 *)(edid + 1), count - sizeof(EDID), true);
-        }
-
         if (checkDI && connectRef->hasDIEXT)
         {
             connectRef->defaultIndex = 1;
@@ -2896,6 +2910,15 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
     }
 
     IODisplayGetAspect( connectRef );
+
+    if (edidData)
+    {
+	count = CFDataGetLength(edidData);
+	if ((size_t) count > sizeof(EDID))
+	{
+	    LookExtensions(connectRef, edid, (UInt8 *)(edid + 1), count - sizeof(EDID), true);
+	}
+    }
 
     if (!connectRef->hasHDMI)
     {
@@ -3026,12 +3049,11 @@ _IODisplayCreateInfoDictionary(
     IODisplayProductID          product = 0;
     SInt32                      displayType = 0;
     UInt32                      serialNumber = 0;
-    CFAbsoluteTime              manufactureDate;
+    uint32_t                    manufactureYear = 0;
+    uint32_t                    manufactureWeek = 0;
     io_string_t                 path;
     int                         i;
     IODisplayTimingRange        displayRange;
-
-    bzero( &manufactureDate, sizeof(manufactureDate) );
 
     if( !(service = IODisplayForFramebuffer( framebuffer, options))) {
         dict = CFDictionaryCreateMutable( kCFAllocatorDefault, 0,
@@ -3072,11 +3094,11 @@ _IODisplayCreateInfoDictionary(
 #warning             ****************
 		if (data)
 		{
-            EDIDInfo( (EDID *) CFDataGetBytePtr(data), &vendor, &product, NULL, NULL, NULL);
+            EDIDInfo( (EDID *) CFDataGetBytePtr(data), &vendor, &product, NULL, NULL, NULL, NULL);
 			if (0x10ac == vendor)
 			{
 				data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault,
-												   spoofEDID, 128, kCFAllocatorNull);
+												   spoofEDID, sizeof(spoofEDID), kCFAllocatorNull);
 			}
 			vendor = product = 0;
         }
@@ -3085,9 +3107,9 @@ _IODisplayCreateInfoDictionary(
             continue;
         edid = (EDID *) CFDataGetBytePtr( data );
         if( vendor && product)
-            EDIDInfo( edid, 0, 0, &serialNumber, &manufactureDate, &isDigital );
+            EDIDInfo( edid, 0, 0, &serialNumber, &manufactureYear, &manufactureWeek, &isDigital );
         else
-            EDIDInfo( edid, &vendor, &product, &serialNumber, &manufactureDate, &isDigital );
+            EDIDInfo( edid, &vendor, &product, &serialNumber, &manufactureYear, &manufactureWeek, &isDigital );
 
     } while( false );
 
@@ -3098,7 +3120,8 @@ _IODisplayCreateInfoDictionary(
     } // </hack>
 
     dict = IODisplayCreateOverrides( options, vendor, product,
-                                        serialNumber, manufactureDate, isDigital );
+                                        serialNumber, manufactureYear, manufactureWeek, 
+                                        isDigital );
 
 #define makeInt( key, value )   \
         num = CFNumberCreate( kCFAllocatorDefault, kCFNumberSInt32Type, &value );       \
@@ -3151,13 +3174,16 @@ _IODisplayCreateInfoDictionary(
         else
             edid = 0;
 
-        obj = CFDictionaryGetValue( regDict, CFSTR(kIODisplayConnectFlagsKey) );
-        if( obj)
-            CFDictionarySetValue( dict, CFSTR(kIODisplayConnectFlagsKey), obj );
-
-        obj = CFDictionaryGetValue( regDict, CFSTR(kIODisplayPrefKeyKey) );
-        if( obj)
-            CFDictionarySetValue( dict, CFSTR(kIODisplayPrefKeyKey), obj );
+		if (regDict)
+		{
+			obj = CFDictionaryGetValue( regDict, CFSTR(kIODisplayConnectFlagsKey) );
+			if( obj)
+				CFDictionarySetValue( dict, CFSTR(kIODisplayConnectFlagsKey), obj );
+	
+			obj = CFDictionaryGetValue( regDict, CFSTR(kIODisplayPrefKeyKey) );
+			if( obj)
+				CFDictionarySetValue( dict, CFSTR(kIODisplayPrefKeyKey), obj );
+		}
 
         if( IOObjectConformsTo( service, "IOBacklightDisplay"))
             CFDictionarySetValue( dict, CFSTR(kIODisplayHasBacklightKey), kCFBooleanTrue );
