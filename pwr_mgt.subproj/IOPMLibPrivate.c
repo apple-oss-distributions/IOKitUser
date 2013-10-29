@@ -49,15 +49,21 @@
 
 static const int kMaxNameLength = 128;
 static mach_port_t powerd_connection = MACH_PORT_NULL;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void _reset_connection( )
 {
+  pthread_mutexattr_t attr;
+
   powerd_connection = MACH_PORT_NULL;
+  pthread_mutexattr_init(&attr);
+  pthread_mutex_init(&lock, &attr);
 }   
 
 IOReturn _pm_connect(mach_port_t *newConnection)
 {
     kern_return_t       kern_result = KERN_SUCCESS;
+    IOReturn            ret = kIOReturnSuccess;
     
     if(!newConnection) return kIOReturnBadArgument;
     if (powerd_connection != MACH_PORT_NULL) {
@@ -66,7 +72,14 @@ IOReturn _pm_connect(mach_port_t *newConnection)
         return kIOReturnSuccess;
     }
 
-    // open reference to PM configd
+    pthread_mutex_lock(&lock);
+
+    // Check again and see if the port is created by another thread 
+    if (powerd_connection != MACH_PORT_NULL) {
+        *newConnection = powerd_connection;
+        goto exit;
+    }
+    // open reference to powerd
     kern_result = bootstrap_look_up2(bootstrap_port, 
                                      kIOPMServerBootstrapName, 
                                      &powerd_connection, 
@@ -76,13 +89,17 @@ IOReturn _pm_connect(mach_port_t *newConnection)
         *newConnection = powerd_connection =  MACH_PORT_NULL;
         asl_log(NULL, NULL, ASL_LEVEL_ERR, 
                 "bootstrap_look_up2 failed with 0x%x\n", kern_result);
-        return kIOReturnError;
+        ret = kIOReturnError;
+        goto exit;
     }
     *newConnection = powerd_connection;
     if (pthread_atfork(NULL, NULL, _reset_connection) != 0)
        powerd_connection = MACH_PORT_NULL;
 
-    return kIOReturnSuccess;
+exit:
+    pthread_mutex_unlock(&lock);
+
+    return ret;
 }
 
 IOReturn _pm_disconnect(mach_port_t connection __unused)
@@ -90,6 +107,102 @@ IOReturn _pm_disconnect(mach_port_t connection __unused)
     // Do nothing. We re-use the mach port
     return kIOReturnSuccess;
 }
+
+
+bool IOPMUserIsActive(void)
+{
+    io_service_t                service = IO_OBJECT_NULL;
+    CFBooleanRef                userIsActiveBool = NULL;
+    bool                        ret_val = false;
+    
+    service = IORegistryEntryFromPath(kIOMasterPortDefault, 
+            kIOPowerPlane ":/IOPowerConnection/IOPMrootDomain");
+
+    if (IO_OBJECT_NULL != service) {
+        userIsActiveBool = IORegistryEntryCreateCFProperty(
+                       service,
+                       CFSTR(kIOPMUserIsActiveKey),
+                       kCFAllocatorDefault, 0);
+        IOObjectRelease(service);
+    }
+    
+    ret_val = (kCFBooleanTrue == userIsActiveBool);
+
+    if (userIsActiveBool) {
+        CFRelease(userIsActiveBool);
+    }
+    return ret_val;
+}
+
+typedef struct {
+    void (^callblock)(bool);
+    IONotificationPortRef         notify;
+    io_object_t                   letItGo;
+} _UserActiveNotification;
+
+void IOPMUserDidChangeCallback(
+    void *refcon __unused,
+    io_service_t service __unused,
+    uint32_t messageType,
+    void *messageArgument __unused)
+{
+    _UserActiveNotification *_useractive = (_UserActiveNotification *)refcon;
+    
+    if (_useractive && (messageType == kIOPMMessageUserIsActiveChanged))
+    {
+        _useractive->callblock( IOPMUserIsActive() );
+    }
+}
+
+
+IOPMNotificationHandle IOPMScheduleUserActiveChangedNotification(dispatch_queue_t queue, void (^block)(bool))
+{
+    _UserActiveNotification *_useractive = NULL;
+    io_registry_entry_t     service = IO_OBJECT_NULL;
+    kern_return_t           kr = KERN_INVALID_VALUE;
+    
+    _useractive = calloc(1, sizeof(_UserActiveNotification));
+    
+    if (_useractive)
+    {
+        _useractive->callblock = Block_copy(block);
+        
+        _useractive->notify = IONotificationPortCreate(MACH_PORT_NULL);
+        if (_useractive->notify) {
+            IONotificationPortSetDispatchQueue(_useractive->notify, queue);
+        }
+        
+        service = IORegistryEntryFromPath(kIOMasterPortDefault,
+                kIOPowerPlane ":/IOPowerConnection/IOPMrootDomain");
+
+        kr = IOServiceAddInterestNotification(
+                _useractive->notify, service, kIOGeneralInterest,
+                IOPMUserDidChangeCallback, (void *)_useractive, &_useractive->letItGo);
+        
+        IOObjectRelease(service);
+    }
+    
+    if (kIOReturnSuccess != kr) {
+        IOPMUnregisterNotification((IOPMNotificationHandle)_useractive);
+        _useractive = NULL;
+    }
+    
+    return _useractive;
+}
+
+void IOPMUnregisterNotification(IOPMNotificationHandle handle)
+{
+    _UserActiveNotification *_useractive = (_UserActiveNotification *)handle;
+
+    if (_useractive)
+    {   if (_useractive->callblock) Block_release(_useractive->callblock);
+        if (_useractive->notify) IONotificationPortDestroy(_useractive->notify);
+        if (IO_OBJECT_NULL != _useractive->letItGo) IOObjectRelease(_useractive->letItGo);
+        bzero(_useractive, sizeof(_useractive));
+        free(_useractive);
+    }
+}
+
 
 /*****************************************************************************/
 /*****************************************************************************/
@@ -840,8 +953,8 @@ void IOPMConnectionSetDispatchQueue(
 /*****************************************************************************/
 
 IOReturn IOPMConnectionCreate(
-    CFStringRef myName, 
-    IOPMSystemPowerStateCapabilities interests, 
+    CFStringRef myName,
+    IOPMCapabilityBits interests,
     IOPMConnection *newConnection)
 {
     __IOPMConnection        *connection = NULL;
@@ -933,7 +1046,7 @@ IOReturn IOPMConnectionRelease(IOPMConnection connection)
         goto exit;
     }
     
-#if !TARGET_OS_EMBEDDED
+#if !TARGET_OS_IPHONE
     if (connection_private->dispatchDelivery) {
         IOPMConnectionSetDispatchQueue(connection, NULL);
     }
@@ -960,7 +1073,7 @@ IOReturn IOPMConnectionAcknowledgeEvent(
     IOPMConnection connect, 
     IOPMConnectionMessageToken token)
 {
-#if TARGET_OS_EMBEDDED
+#if TARGET_OS_IPHONE
     (void)connect;
     (void)token;
     
@@ -968,7 +1081,7 @@ IOReturn IOPMConnectionAcknowledgeEvent(
 #else
     return IOPMConnectionAcknowledgeEventWithOptions(
                            connect, token, NULL);
-#endif /* TARGET_OS_EMBEDDED */
+#endif /* TARGET_OS_IPHONE */
 }
 
 
@@ -980,7 +1093,7 @@ IOReturn IOPMConnectionAcknowledgeEventWithOptions(
     IOPMConnectionMessageToken token, 
     CFDictionaryRef options)
 {
-#if TARGET_OS_EMBEDDED
+#if TARGET_OS_IPHONE
     (void)myConnection;
     (void)token;
     (void)options;
@@ -1037,7 +1150,7 @@ exit:
     if (serializedData) CFRelease(serializedData);
 
     return return_code;
-#endif /* TARGET_OS_EMBEDDED */
+#endif /* TARGET_OS_IPHONE */
 }
 
 /*****************************************************************************/
@@ -1085,42 +1198,100 @@ exit:
 /*****************************************************************************/
 /*****************************************************************************/
 
-#define SYSTEM_ON_CAPABILITIES (kIOPMSystemPowerStateCapabilityCPU | kIOPMSystemPowerStateCapabilityVideo \
-                            | kIOPMSystemPowerStateCapabilityAudio | kIOPMSystemPowerStateCapabilityNetwork  \
-                            | kIOPMSystemPowerStateCapabilityDisk)
+#define SYSTEM_ON_CAPABILITIES (kIOPMCapabilityCPU | kIOPMCapabilityVideo | kIOPMCapabilityAudio \
+                                | kIOPMCapabilityNetwork | kIOPMCapabilityDisk)
 
-IOPMSystemPowerStateCapabilities IOPMConnectionGetSystemCapabilities(void)
+IOPMCapabilityBits IOPMConnectionGetSystemCapabilities(void)
 {
-    CFNumberRef                         capabilities = NULL;
-    io_service_t                        service = IO_OBJECT_NULL;
-    IOPMSystemPowerStateCapabilities    ret_cap = SYSTEM_ON_CAPABILITIES;
-    
-    service = IORegistryEntryFromPath(kIOMasterPortDefault, 
-            kIOPowerPlane ":/IOPowerConnection/IOPMrootDomain");
 
-    if (IO_OBJECT_NULL != service) {
-        capabilities = IORegistryEntryCreateCFProperty(service, CFSTR("System Capabilities"), 0, 0);
+    mach_port_t             pm_server = MACH_PORT_NULL;
+    kern_return_t           kern_result;
+    IOPMCapabilityBits      ret_cap = SYSTEM_ON_CAPABILITIES;
+    IOReturn                return_code = kIOReturnError;
 
-        if (capabilities) {
-            CFNumberGetValue(capabilities, kCFNumberIntType, &ret_cap);
-            CFRelease(capabilities);
-        }
-        
-        IOObjectRelease(service);
-    }
-    // This is a workaround for <rdar://problem/10464793>
-    // FIXME: IOPMConnectionGetSystemCapabilities should eventually get its 
-    // capability bits from powerd
-    if(ret_cap & kIOPMSystemPowerStateCapabilityCPU)
-        return (ret_cap | kIOPMSystemPowerStateCapabilityDisk);
-    else
-        return ret_cap;
+    return_code = _pm_connect(&pm_server);
+
+    if(pm_server == MACH_PORT_NULL)
+      return ret_cap; 
+
+    kern_result = io_pm_get_capability_bits(pm_server, &ret_cap, &return_code);
+
+    _pm_disconnect(pm_server);
+
+    return ret_cap;
+
+
 }
+
+
+bool IOPMIsADarkWake(IOPMCapabilityBits c)
+{
+    return ((c & kIOPMCapabilityCPU) && !(c & kIOPMCapabilityVideo));
+}
+
+bool IOPMAllowsBackgroundTask(IOPMCapabilityBits c)
+{
+    return (0 != (c & kIOPMCapabilityBackgroundTask));
+}
+
+bool IOPMAllowsPushServiceTask(IOPMCapabilityBits c)
+{
+    return (0 != (c & kIOPMCapabilityPushServiceTask));
+}
+
+bool IOPMIsASilentWake(IOPMCapabilityBits c)
+{
+    return (0 != (c & kIOPMCapabilitySilentRunning));
+}
+
+bool IOPMIsAUserWake(IOPMCapabilityBits c)
+{
+    return (0 != (c & kIOPMCapabilityVideo));
+}
+
+bool IOPMIsASleep(IOPMCapabilityBits c)
+{
+    return (0 == (c & kIOPMCapabilityCPU));
+}
+
+bool IOPMGetCapabilitiesDescription(char *buf, int buf_size, IOPMCapabilityBits in_caps)
+{
+    uint64_t caps = (uint64_t)in_caps;
+    int printed_total = 0;
+    char *on_sleep_dark = "";
+    
+    if (IOPMIsASleep(caps))
+    {
+        on_sleep_dark = "Sleep";
+    } else if (IOPMIsADarkWake(caps))
+    {
+        on_sleep_dark = "DarkWake";
+    } else if (IOPMIsAUserWake(caps))
+    {
+        on_sleep_dark = "FullWake";
+    } else
+    {
+        on_sleep_dark = "Unknown";
+    }
+    
+    printed_total = snprintf(buf, buf_size, "%s:%s%s%s%s%s%s%s",
+                             on_sleep_dark,
+                             (caps & kIOPMCapabilityCPU) ? "cpu ":"<off> ",
+                             (caps & kIOPMCapabilityDisk) ? "disk ":"",
+                             (caps & kIOPMCapabilityNetwork) ? "net ":"",
+                             (caps & kIOPMCapabilityAudio) ? "aud ":"",
+                             (caps & kIOPMCapabilityVideo) ? "vid ":"",
+                             (caps & kIOPMCapabilityPushServiceTask) ? "push ":"",
+                             (caps & kIOPMCapabilityBackgroundTask) ? "bg ":"");
+    
+    return (printed_total <= buf_size);
+}
+
 
 /*****************************************************************************/
 /*****************************************************************************/
 #pragma mark -
-#pragma mark SleepServices
+#pragma mark Talking about DarkWake
 
 bool IOPMGetSleepServicesActive(void)
 {
@@ -1136,30 +1307,60 @@ bool IOPMGetSleepServicesActive(void)
     return ((payload &  kIOPMSleepServiceActiveNotifyBit) ? true : false);
 }
 
+
+int IOPMGetDarkWakeThermalEmergencyCount(void)
+{
+    return IOPMGetValueInt(kIOPMDarkWakeThermalEventCount);
+}
+
 /*****************************************************************************/
 /*****************************************************************************/
 #pragma mark -
-#pragma mark Power History
+#pragma mark Power Internals
 
-IOReturn IOPMSetPowerHistoryBookmark(char* uuid) {
-	
-	IOReturn                err;
-	mach_port_t             pm_server = MACH_PORT_NULL;
-	kern_return_t           kern_result;
-	
-	err = _pm_connect(&pm_server);
-	
-  if(pm_server == MACH_PORT_NULL)
-	  return kIOReturnNotReady; 
-	
-  kern_result = io_pm_set_power_history_bookmark(pm_server, uuid);
-	
-  _pm_disconnect(pm_server);
-	
-	return kern_result;
+/*!
+ * @function        IOPMGetValueInt
+ * @abstract        For IOKit use only.
+ */
+int IOPMGetValueInt(int selector) {
+    mach_port_t             pm_server = MACH_PORT_NULL;
+    int                     valint = 0;
+    kern_return_t           kern_result;
+    
+    if (kIOReturnSuccess == _pm_connect(&pm_server))
+    {
+        kern_result = io_pm_get_value_int(
+                                          pm_server,
+                                          selector,
+                                          &valint);
+        if (KERN_SUCCESS != kern_result) {
+            valint = 0;
+        }
+        _pm_disconnect(pm_server);
+    }
+    return valint;
 }
 
-#if TARGET_OS_EMBEDDED
+/*!
+ * @function        IOPMSetValueInt
+ * @abstract        For IOKit use only.
+ */
+void IOPMSetValueInt(int selector, int value) {
+    mach_port_t             pm_server = MACH_PORT_NULL;
+    
+    if (kIOReturnSuccess == _pm_connect(&pm_server))
+    {
+        io_pm_set_value_int(
+                            pm_server,
+                            selector,
+                            value);
+        _pm_disconnect(pm_server);
+    }
+    return;
+}
+
+
+#if TARGET_OS_IPHONE
 IOReturn IOPMSetDebugFlags(uint32_t newFlags __unused, 
             uint32_t *oldFlags __unused)
 {
@@ -1194,7 +1395,7 @@ IOReturn IOPMSetDebugFlags(uint32_t newFlags, uint32_t *oldFlags)
 	
 }
 
-#if TARGET_OS_EMBEDDED
+#if TARGET_OS_IPHONE
 IOReturn IOPMSetBTWakeInterval(uint32_t newInterval __unused, 
       uint32_t *oldInterval __unused)
 {
@@ -1226,17 +1427,178 @@ IOReturn IOPMSetBTWakeInterval(uint32_t newInterval, uint32_t *oldInterval)
 
 #endif
     return kIOReturnSuccess;
-	
+
+}
+
+#if TARGET_OS_IPHONE
+IOReturn IOPMSetDWLingerInterval(uint32_t newInterval __unused, 
+      uint32_t *oldInterval __unused)
+{
+#else
+IOReturn IOPMSetDWLingerInterval(uint32_t newInterval, uint32_t *oldInterval)
+{
+
+    mach_port_t             pm_server = MACH_PORT_NULL;
+    kern_return_t           kern_result;
+    uint32_t                interval = 0;
+    IOReturn                return_code = kIOReturnError;
+
+    return_code = _pm_connect(&pm_server);
+
+    if(pm_server == MACH_PORT_NULL)
+      return kIOReturnNotReady; 
+
+    kern_result = io_pm_set_dw_linger_interval(pm_server, newInterval, &interval, &return_code);
+
+    _pm_disconnect(pm_server);
+
+    if ( kern_result == KERN_SUCCESS && return_code == kIOReturnSuccess) {
+        if (oldInterval) 
+            *oldInterval = interval;
+        return kIOReturnSuccess;
+    }
+    else 
+        return return_code;
+
+#endif
+    return kIOReturnSuccess;
+
+}
+
+IOReturn IOPMChangeSystemActivityAssertionBehavior(uint32_t newFlags, uint32_t *oldFlags)
+{
+    mach_port_t             pm_server = MACH_PORT_NULL;
+    kern_return_t           kern_result;
+    uint32_t                flags = 0;
+    IOReturn                return_code = kIOReturnError;
+
+    return_code = _pm_connect(&pm_server);
+
+    if(pm_server == MACH_PORT_NULL)
+      return kIOReturnNotReady;
+
+    kern_result = io_pm_change_sa_assertion_behavior(pm_server, newFlags, &flags, &return_code);
+
+    _pm_disconnect(pm_server);
+
+    if ( kern_result == KERN_SUCCESS && return_code == kIOReturnSuccess)
+    {
+        if(flags)
+            *oldFlags = flags;
+        return kIOReturnSuccess;
+    }
+    else
+        return return_code;
+}
+
+/*****************************************************************************/
+/*****************************************************************************/
+IOReturn IOPMCtlAssertionType(char *type, int op)
+{
+    mach_port_t             pm_server = MACH_PORT_NULL;
+    kern_return_t           kern_result;
+    IOReturn                return_code = kIOReturnError;
+
+    return_code = _pm_connect(&pm_server);
+
+    if(pm_server == MACH_PORT_NULL)
+      return kIOReturnNotReady; 
+
+    kern_result = io_pm_ctl_assertion_type(pm_server, type, 
+            op, &return_code);
+
+    _pm_disconnect(pm_server);
+
+    if ( kern_result == KERN_SUCCESS && return_code == kIOReturnSuccess) {
+        return kIOReturnSuccess;
+    }
+    else 
+        return return_code;
+}
+
+/*****************************************************************************/
+/*****************************************************************************/
+#define kPMReportPowerOn       0x01 
+#define kPMReportDeviceUsable  0x02
+#define kPMReportLowPower      0x04      
+CFDictionaryRef  IOPMCopyPowerStateInfo(uint64_t state_id)
+{
+    CFMutableDictionaryRef dict = NULL;
+    CFTypeRef objRef = NULL;
+    uint32_t val = 0;
+
+    dict  = CFDictionaryCreateMutable(kCFAllocatorDefault,
+                                 0,
+                                 &kCFTypeDictionaryKeyCallBacks,
+                                 &kCFTypeDictionaryValueCallBacks);
+
+    if (!dict)
+        return kIOReturnNoMemory;
+
+    val = state_id & 0xf;
+    objRef = CFNumberCreate(0, kCFNumberIntType, &val);
+    if (objRef) {
+        CFDictionarySetValue(dict, kIOPMNodeCurrentState, objRef);
+        CFRelease(objRef);
+    }
+
+    val = ((state_id >> 4) & 0xf);
+    objRef = CFNumberCreate(0, kCFNumberIntType, &val);
+    if (objRef) {
+        CFDictionarySetValue(dict, kIOPMNodeMaxState, objRef);
+        CFRelease(objRef); objRef = NULL;
+    }
+
+    if ( (state_id >> 8) & kPMReportPowerOn)
+        CFDictionarySetValue(dict, kIOPMNodeIsPowerOn, kCFBooleanTrue);
+    else
+        CFDictionarySetValue(dict, kIOPMNodeIsPowerOn, kCFBooleanFalse);
+
+    if ( (state_id >> 8) & kPMReportDeviceUsable)
+        CFDictionarySetValue(dict, kIOPMNodeIsDeviceUsable, kCFBooleanTrue);
+    else
+        CFDictionarySetValue(dict, kIOPMNodeIsDeviceUsable, kCFBooleanFalse);
+
+
+    if ( (state_id >> 8) & kPMReportLowPower)
+        CFDictionarySetValue(dict, kIOPMNodeIsLowPower, kCFBooleanTrue);
+    else
+        CFDictionarySetValue(dict, kIOPMNodeIsLowPower, kCFBooleanFalse);
+
+    return dict;
 }
 /*****************************************************************************/
 /*****************************************************************************/
+
+IOReturn IOPMAssertionNotify(char *name, int req_type)
+{
+    mach_port_t             pm_server = MACH_PORT_NULL;
+    kern_return_t           kern_result;
+    IOReturn                return_code = kIOReturnError;
+
+    return_code = _pm_connect(&pm_server);
+
+    if(pm_server == MACH_PORT_NULL)
+      return kIOReturnNotReady; 
+
+    kern_result = io_pm_assertion_notify(pm_server, name, 
+            req_type, &return_code);
+
+    _pm_disconnect(pm_server);
+
+    if ( kern_result == KERN_SUCCESS && return_code == kIOReturnSuccess) {
+        return kIOReturnSuccess;
+    }
+    else 
+        return return_code;
+}
 
 /*****************************************************************************/
 /*****************************************************************************/
 
 #if 0
 bool IOPMSystemPowerStateSupportsAcknowledgementOption(
-    IOPMSystemPowerStateCapabilities stateDescriptor,
+    IOPMCapabilityBits stateDescriptor,
     CFStringRef acknowledgementOption)
 {
     if (!acknowledgementOption)

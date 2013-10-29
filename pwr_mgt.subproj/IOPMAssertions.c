@@ -22,10 +22,13 @@
  */
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreFoundation/CFPriv.h>
 #include <mach/mach.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/pwr_mgt/IOPMLibPrivate.h>
 #include "IOSystemConfiguration.h"
+#include <sys/time.h>
+#include <notify.h>
 
 #include "powermanagement_mig.h"
 #include "powermanagement.h"
@@ -35,6 +38,14 @@
 
 #define kAssertionsArraySize        5
 
+#ifndef __CFRunLoopOptionsTakeAssertion
+#define __CFRunLoopOptionsTakeAssertion 8
+#endif
+
+#ifndef __CFRunLoopOptionsDropAssertion
+#define __CFRunLoopOptionsDropAssertion 9
+#endif
+
 static const int kMaxNameLength = 128;
 
 IOReturn _pm_connect(mach_port_t *newConnection);
@@ -42,6 +53,7 @@ IOReturn _pm_disconnect(mach_port_t connection);
 
 
 __private_extern__ IOReturn _copyPMServerObject(int selector, int assertionID, CFTypeRef *objectOut);
+__private_extern__ io_registry_entry_t getPMRootDomainRef(void);
 
 
 /******************************************************************************
@@ -168,6 +180,14 @@ IOReturn IOPMAssertionCreateWithProperties(
     CFDataRef               flattenedProps  = NULL;
     CFStringRef             assertionTypeString = NULL;
     CFMutableDictionaryRef  mutableProps = NULL;
+    int                     disableAppSleep = 0;
+#if !TARGET_OS_IPHONE
+    static int              disableAppSleepToken = 0;
+    static int              enableAppSleepToken = 0;
+#else
+    static int              resyncToken = 0;
+    static CFMutableDictionaryRef  resyncCopy = NULL;
+#endif
 
     if (!AssertionProperties || !AssertionID) {
         return_code = kIOReturnBadArgument;
@@ -187,25 +207,78 @@ IOReturn IOPMAssertionCreateWithProperties(
     }
 
 
+    assertionTypeString = CFDictionaryGetValue(AssertionProperties, kIOPMAssertionTypeKey);
 
 
-    
+#if TARGET_OS_IPHONE
+
+    if (isA_CFString(assertionTypeString) && 
+                CFEqual(assertionTypeString, kIOPMAssertionTypeEnableIdleSleep) && !resyncToken) {
+
+        resyncCopy = CFDictionaryCreateMutableCopy(NULL, 0, AssertionProperties);
+        notify_register_dispatch( kIOUserAssertionReSync, 
+                &resyncToken, dispatch_get_main_queue(),
+                ^(int t __unused) {
+                    IOPMAssertionID id;
+                    IOPMAssertionCreateWithProperties(resyncCopy, &id);
+                 });
+    }
+#endif    
     flattenedProps = CFPropertyListCreateData(0, mutableProps, 
                           kCFPropertyListBinaryFormat_v1_0, 0, NULL /* error */);
     if (!flattenedProps) {
         return_code = kIOReturnBadArgument;
         goto exit;
     }
+
+#if !TARGET_OS_IPHONE
+    if ( !disableAppSleepToken ) {
+       char notify_str[128];
+
+       snprintf(notify_str, sizeof(notify_str), "%s.%d", 
+                            kIOPMDisableAppSleepPrefix, getpid());
+
+       notify_register_dispatch(
+             notify_str,
+             &disableAppSleepToken,
+             dispatch_get_main_queue(),
+             ^(int t __unused){
+                __CFRunLoopSetOptionsReason(__CFRunLoopOptionsTakeAssertion, CFSTR("App is holding power assertion."));
+             });
+    }
     
+    if ( !enableAppSleepToken ) {
+       char notify_str[128];
+
+       snprintf(notify_str, sizeof(notify_str), "%s.%d", 
+                            kIOPMEnableAppSleepPrefix, getpid());
+
+       notify_register_dispatch(
+             notify_str,
+             &enableAppSleepToken,
+             dispatch_get_main_queue(),
+             ^(int t __unused){
+                __CFRunLoopSetOptionsReason(__CFRunLoopOptionsDropAssertion, CFSTR("App released all power assertions."));
+             });
+    }
+#endif
+
     kern_result = io_pm_assertion_create( pm_server, 
                                           (vm_offset_t)CFDataGetBytePtr(flattenedProps),
                                           CFDataGetLength(flattenedProps),
                                           (int *)AssertionID, 
+                                          &disableAppSleep,
                                           &return_code);
     
     if(KERN_SUCCESS != kern_result) {
         return_code = kIOReturnInternalError;
     }
+#if !TARGET_OS_IPHONE
+    if (disableAppSleep) {
+        __CFRunLoopSetOptionsReason(__CFRunLoopOptionsTakeAssertion, 
+                    CFSTR("App is preventing system sleep with power assertion."));
+    }
+#endif
 
 exit:
 	if (flattenedProps) {
@@ -231,6 +304,8 @@ void IOPMAssertionRetain(IOPMAssertionID theAssertion)
     kern_return_t           kern_result     = KERN_SUCCESS;
     mach_port_t             pm_server       = MACH_PORT_NULL;
     IOReturn                err;
+    int                     disableAppSleep = 0;
+    int                     enableAppSleep = 0;
     
     if (!theAssertion) {
         return_code = kIOReturnBadArgument;
@@ -246,11 +321,20 @@ void IOPMAssertionRetain(IOPMAssertionID theAssertion)
     kern_result = io_pm_assertion_retain_release( pm_server, 
                                          (int)theAssertion,
                                          kIOPMAssertionMIGDoRetain,
+                                         &disableAppSleep,
+                                         &enableAppSleep,
                                          &return_code);
     
     if(KERN_SUCCESS != kern_result) {
         return_code = kIOReturnInternalError;
     }
+#if !TARGET_OS_IPHONE
+        if (disableAppSleep) {
+            __CFRunLoopSetOptionsReason(__CFRunLoopOptionsTakeAssertion, 
+                        CFSTR("App is preventing system sleep with power assertion."));
+        }
+#endif
+
     
 exit:
     if (MACH_PORT_NULL != pm_server) {
@@ -270,6 +354,8 @@ IOReturn IOPMAssertionRelease(IOPMAssertionID AssertionID)
     kern_return_t           kern_result = KERN_SUCCESS;
     mach_port_t             pm_server = MACH_PORT_NULL;
     IOReturn                err;
+    int                     disableAppSleep = 0;
+    int                     enableAppSleep = 0;
     
     if (!AssertionID) {
         return_code = kIOReturnBadArgument;
@@ -285,12 +371,20 @@ IOReturn IOPMAssertionRelease(IOPMAssertionID AssertionID)
     kern_result = io_pm_assertion_retain_release( pm_server, 
                                                  (int)AssertionID,
                                                  kIOPMAssertionMIGDoRelease,
+                                                 &disableAppSleep,
+                                                 &enableAppSleep,
                                                  &return_code);
 
     if(KERN_SUCCESS != kern_result) {
         return_code = kIOReturnInternalError;
     }
-    
+#if !TARGET_OS_IPHONE
+        if (enableAppSleep) {
+            __CFRunLoopSetOptionsReason(__CFRunLoopOptionsDropAssertion, 
+                    CFSTR("App is not preventing sleep any more."));
+        }
+#endif
+  
     _pm_disconnect(pm_server);
 exit:
     return return_code;
@@ -308,6 +402,8 @@ IOReturn IOPMAssertionSetProperty(IOPMAssertionID theAssertion, CFStringRef theP
     mach_port_t             pm_server       = MACH_PORT_NULL;
     CFDataRef               sendData        = NULL;
     CFDictionaryRef         sendDict        = NULL;
+    int                     disableAppSleep = 0;
+    int                     enableAppSleep = 0;
     
     if (!theAssertion) {
         return_code = kIOReturnBadArgument;
@@ -333,12 +429,25 @@ IOReturn IOPMAssertionSetProperty(IOPMAssertionID theAssertion, CFStringRef theP
                                                (int)theAssertion,
                                                (vm_offset_t)CFDataGetBytePtr(sendData),
                                                CFDataGetLength(sendData),
+                                               &disableAppSleep,
+                                               &enableAppSleep,
                                                (int *)&return_code);
     
     if(KERN_SUCCESS != kern_result) {
         return_code = kIOReturnInternalError;
         goto exit;
     }
+#if !TARGET_OS_IPHONE
+        if (disableAppSleep) {
+            __CFRunLoopSetOptionsReason(__CFRunLoopOptionsTakeAssertion, 
+                       CFSTR("App is preventing system sleep with power assertion."));
+        }
+        else if (enableAppSleep) {
+            __CFRunLoopSetOptionsReason(__CFRunLoopOptionsDropAssertion, 
+                    CFSTR("App is not preventing sleep any more."));
+        }
+#endif
+ 
     
 exit:
     if (sendData)
@@ -374,6 +483,120 @@ IOReturn IOPMAssertionSetTimeout(IOPMAssertionID whichAssertion,
 }
 
 /******************************************************************************
+ * IOPMAssertionDeclareNotificationEvent
+ *
+ ******************************************************************************/
+ IOReturn IOPMAssertionDeclareNotificationEvent(
+                        __unused CFStringRef          notificationName,
+                        __unused CFTimeInterval       secondsToDisplay,
+                        __unused IOPMAssertionID      *AssertionID)
+{
+#if TCPKEEPALIVE
+    IOPMAssertionID     id = kIOPMNullAssertionID;
+    IOReturn            ret = kIOReturnSuccess;
+    io_registry_entry_t rootdomain = getPMRootDomainRef();
+    CFBooleanRef        lidIsClosed = NULL;
+    CFBooleanRef        desktopMode = NULL;
+
+    if (rootdomain == MACH_PORT_NULL) 
+        return kIOReturnInternalError;
+    
+    desktopMode = IORegistryEntryCreateCFProperty(rootdomain, 
+            CFSTR("DesktopMode"), kCFAllocatorDefault, 0);
+    lidIsClosed = IORegistryEntryCreateCFProperty(rootdomain, 
+            CFSTR(kAppleClamshellStateKey), kCFAllocatorDefault, 0);
+    
+    if ((kCFBooleanTrue == lidIsClosed) && (kCFBooleanFalse == desktopMode)) {
+        ret = kIOReturnNotReady;
+        goto exit;
+    }
+
+    ret = IOPMAssertionCreateWithDescription(
+            kIOPMAssertDisplayWake,
+            notificationName, NULL, NULL, NULL,
+            secondsToDisplay, kIOPMAssertionTimeoutActionRelease,
+            &id);
+    if (AssertionID)
+        *AssertionID = id;
+
+exit:
+    if (lidIsClosed) CFRelease(lidIsClosed);
+    if (desktopMode) CFRelease(desktopMode);
+
+    return ret;
+#endif
+    if (AssertionID) {
+        *AssertionID = kIOPMNullAssertionID;
+    }
+    return kIOReturnUnsupported;
+}
+
+/******************************************************************************
+ * IOPMAssertionDeclareSystemActivity
+ *
+ ******************************************************************************/
+IOReturn IOPMAssertionDeclareSystemActivity(
+                        CFStringRef             AssertionName,
+                        IOPMAssertionID         *AssertionID,
+                        IOPMSystemState         *SystemState)
+{
+    IOReturn        return_code = kIOReturnError;
+    mach_port_t     pm_server   = MACH_PORT_NULL;
+    kern_return_t   kern_result = KERN_SUCCESS;
+    IOReturn        err;
+
+    CFMutableDictionaryRef  properties      = NULL;
+    CFDataRef               flattenedProps  = NULL;
+
+    if (!AssertionName || !AssertionID || !SystemState) {
+        return_code = kIOReturnBadArgument;
+        goto exit;
+    }
+
+    err = _pm_connect(&pm_server);
+    if(kIOReturnSuccess != err) {
+        return_code = kIOReturnInternalError;
+        goto exit;
+    }
+
+    properties = CFDictionaryCreateMutable(0, 1, &kCFTypeDictionaryKeyCallBacks, 
+                                           &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(properties, kIOPMAssertionNameKey, AssertionName);
+
+    flattenedProps = CFPropertyListCreateData(0, properties, 
+                          kCFPropertyListBinaryFormat_v1_0, 0, NULL /* error */);
+    if (!flattenedProps) {
+        return_code = kIOReturnBadArgument;
+        goto exit;
+    }
+ 
+    kern_result = io_pm_declare_system_active(
+                        pm_server,
+                        (int *)SystemState,
+                        (vm_offset_t)CFDataGetBytePtr(flattenedProps),
+                        CFDataGetLength(flattenedProps),
+                        (int *)AssertionID,
+                        &return_code);
+
+    if(KERN_SUCCESS != kern_result) {
+        return_code = kIOReturnInternalError;
+        goto exit;
+    }
+exit:
+    if (flattenedProps)
+        CFRelease(flattenedProps);
+
+    if (properties)
+        CFRelease(properties);
+
+    if (MACH_PORT_NULL != pm_server) {
+        _pm_disconnect(pm_server);
+    }
+
+    return return_code;
+
+}
+/******************************************************************************
  * IOPMAssertionDeclareUserActivity
  *
  ******************************************************************************/
@@ -387,6 +610,98 @@ IOReturn IOPMAssertionDeclareUserActivity(
     mach_port_t     pm_server = MACH_PORT_NULL;
     kern_return_t   kern_result = KERN_SUCCESS;
     IOReturn        err;
+    static struct timeval prev_ts = {0,0};
+    struct timeval ts;
+    int                     disableAppSleep = 0;
+
+
+    CFMutableDictionaryRef  properties = NULL;
+    CFDataRef               flattenedProps  = NULL;
+
+    if (!AssertionName || !AssertionID) {
+        return_code = kIOReturnBadArgument;
+        goto exit;
+    }
+    
+    gettimeofday(&ts, NULL);
+    if (ts.tv_sec - prev_ts.tv_sec <= 5) {
+       if ( *AssertionID == kIOPMNullAssertionID )
+          *AssertionID = 0xabcd; /* Give a dummy id */
+       return_code = kIOReturnSuccess;
+       goto exit;
+    }
+    prev_ts = ts;
+
+    err = _pm_connect(&pm_server);
+    if(kIOReturnSuccess != err) {
+        return_code = kIOReturnInternalError;
+        goto exit;
+    }
+
+    properties = CFDictionaryCreateMutable(0, 1, &kCFTypeDictionaryKeyCallBacks, 
+                                           &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(properties, kIOPMAssertionNameKey, AssertionName);
+
+    flattenedProps = CFPropertyListCreateData(0, properties, 
+                          kCFPropertyListBinaryFormat_v1_0, 0, NULL /* error */);
+    if (!flattenedProps) {
+        return_code = kIOReturnBadArgument;
+        goto exit;
+    }
+ 
+
+    kern_result = io_pm_declare_user_active( 
+                        pm_server, 
+                        userType,
+                        (vm_offset_t)CFDataGetBytePtr(flattenedProps),
+                        CFDataGetLength(flattenedProps),
+                        (int *)AssertionID,
+                        &disableAppSleep,
+                        &return_code);
+
+
+    if(KERN_SUCCESS != kern_result) {
+        return_code = kIOReturnInternalError;
+        goto exit;
+    }
+#if !TARGET_OS_IPHONE
+        if (disableAppSleep) {
+            __CFRunLoopSetOptionsReason(__CFRunLoopOptionsTakeAssertion, 
+                        CFSTR("App is preventing system sleep with power assertion."));
+        }
+#endif
+
+
+exit:
+    if (flattenedProps)
+        CFRelease(flattenedProps);
+
+    if (properties)
+        CFRelease(properties);
+
+    if (MACH_PORT_NULL != pm_server) {
+        _pm_disconnect(pm_server);
+    }
+
+    return return_code;
+}
+
+
+/******************************************************************************
+ * IOPMDeclareNetworkClientActivity
+ *
+ ******************************************************************************/
+IOReturn IOPMDeclareNetworkClientActivity(
+                        CFStringRef          AssertionName,
+                        IOPMAssertionID      *AssertionID)
+{
+
+    IOReturn        return_code = kIOReturnError;
+    mach_port_t     pm_server = MACH_PORT_NULL;
+    kern_return_t   kern_result = KERN_SUCCESS;
+    IOReturn        err;
+    int             disableAppSleep = 0;
+
 
     CFMutableDictionaryRef  properties = NULL;
     CFDataRef               flattenedProps  = NULL;
@@ -414,12 +729,12 @@ IOReturn IOPMAssertionDeclareUserActivity(
     }
  
 
-    kern_result = io_pm_declare_user_active( 
+    kern_result = io_pm_declare_network_client_active(
                         pm_server, 
-                        userType,
                         (vm_offset_t)CFDataGetBytePtr(flattenedProps),
                         CFDataGetLength(flattenedProps),
                         (int *)AssertionID,
+                        &disableAppSleep,
                         &return_code);
 
 
@@ -427,7 +742,14 @@ IOReturn IOPMAssertionDeclareUserActivity(
         return_code = kIOReturnInternalError;
         goto exit;
     }
-    
+#if !TARGET_OS_IPHONE
+        if (disableAppSleep) {
+            __CFRunLoopSetOptionsReason(__CFRunLoopOptionsTakeAssertion, 
+                        CFSTR("App is preventing system sleep with power assertion."));
+        }
+#endif
+
+
 exit:
     if (flattenedProps)
         CFRelease(flattenedProps);
@@ -441,6 +763,8 @@ exit:
 
     return return_code;
 }
+
+
 
 /******************************************************************************
  * IOPMCopyAssertionsByProcess

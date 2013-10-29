@@ -339,6 +339,7 @@ struct IOFBConnect
     CFMutableDictionaryRef      modes;
     CFMutableArrayRef           modesArray;
     CFMutableDictionaryRef      overrides;
+    CFMutableDictionaryRef      displayAttributes;
     UInt32                       driverModeCount;
     IOFBDisplayModeDescription * driverModeInfo;
     IONotificationPortRef       notifyPort;
@@ -402,6 +403,7 @@ struct IOFBConnect
     Boolean                     firstBoot;
     Boolean                     displayMirror;
     Boolean                     didPowerOff;
+    Boolean						opened;
 
     struct IOAccelConnectStruct * transformSurface;
 
@@ -474,3 +476,6 @@ RefreshRateFromDetailedTiming( IODetailedTimingInformationV2 * detailed );
 
 __private_extern__ Boolean
 IODisplayEDIDName( EDID * edid, char * name );
+
+extern CFMutableDictionaryRef gIOGraphicsProperties;
+

@@ -42,7 +42,7 @@
 #include <servers/bootstrap.h>
 #include "powermanagement.h"
 
-#if !TARGET_OS_EMBEDDED
+#if !TARGET_OS_IPHONE
 kern_return_t IOFramebufferServerStart( void );
 #endif
 
@@ -50,7 +50,7 @@ kern_return_t
 IOHIDCreateSharedMemory( io_connect_t connect,
 	unsigned int version )
 {
-#if !TARGET_OS_EMBEDDED
+#if !TARGET_OS_IPHONE
     IOFramebufferServerStart();
 #endif
     uint64_t inData = version;
@@ -204,13 +204,12 @@ IOHIDGetButtonEventNum( io_connect_t connect,
 }
 
 kern_return_t
-IOHIDGetModifierLockState( io_connect_t handle, int selector, bool *state )
+IOHIDGetStateForSelector( io_connect_t handle, int selector, UInt32 *state )
 {
     kern_return_t err;
     uint64_t        inData[1] = {selector};
     uint64_t        outData[1] = {0};
     uint32_t        outCount = 1;
-    // IOHIDSystem::extGetModifierLockState
     err = IOConnectCallMethod(handle, 5,      // Index
                               inData, 1, NULL, 0,    // Input
                               outData, &outCount, NULL, NULL); // Output
@@ -220,7 +219,7 @@ IOHIDGetModifierLockState( io_connect_t handle, int selector, bool *state )
 }
 
 kern_return_t
-IOHIDSetModifierLockState( io_connect_t handle, int selector, bool state )
+IOHIDSetStateForSelector( io_connect_t handle, int selector, UInt32 state )
 {
     kern_return_t err;
     uint64_t        inData[2] = {selector, state};
@@ -231,6 +230,21 @@ IOHIDSetModifierLockState( io_connect_t handle, int selector, bool state )
                               NULL, &outCount, NULL, NULL); // Output
     
     return err;
+}
+
+kern_return_t
+IOHIDGetModifierLockState( io_connect_t handle, int selector, bool *state )
+{
+    UInt32  internalState = 0;
+    kern_return_t err = IOHIDGetStateForSelector(handle, selector, &internalState);
+    *state = internalState ? true : false;
+    return err;
+}
+
+kern_return_t
+IOHIDSetModifierLockState( io_connect_t handle, int selector, bool state )
+{
+    return IOHIDSetStateForSelector(handle, selector, state);
 }
 
 kern_return_t
@@ -273,4 +287,21 @@ IOHIDSetVirtualDisplayBounds( io_connect_t handle, UInt32 display_token, const I
                               NULL, &outCount, NULL, NULL); // Output
     
     return err;
+}
+
+kern_return_t
+IOHIDGetActivityState( io_connect_t handle, bool *hidActivityIdle )
+{
+    kern_return_t err;
+    uint64_t        outData[1] = {0};
+    uint32_t        outCount = 1;
+
+    if (!hidActivityIdle) return kIOReturnBadArgument;
+    
+    err = IOConnectCallMethod(handle, 10,      // Index
+                              NULL, 0, NULL, 0,    // Input
+                              outData, &outCount, NULL, NULL); // Output
+    *hidActivityIdle = outData[0] ? true : false;
+    return err;
+
 }

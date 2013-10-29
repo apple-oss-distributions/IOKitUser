@@ -48,165 +48,6 @@
 #define DEBUGPARAMS             0
 
 
-// These values are taken directly from the CEA861 spec.
-// See Tables 3 and 4 of the specification for details.
-typedef struct
-{
-    bool        supported;
-    uint16_t    hActive;
-    uint16_t    vActive;
-    uint16_t    interlaced;
-    uint16_t    hTotal;
-    uint16_t    hBlank;
-    uint16_t    vTotal;
-    uint16_t    vBlank;
-    float       pClk;
-    uint16_t    hFront;
-    uint16_t    hSync;
-    uint16_t    hBack;
-    uint16_t    hPolarity;
-    uint16_t    vFront;
-    uint16_t    vSync;
-    uint16_t    vBack;
-    uint16_t    vPolarity;
-} CEAVideoFormatData;
-
-#define MAX_CEA861_VIDEO_FORMATS 64
-
-static const CEAVideoFormatData CEAVideoFormats[MAX_CEA861_VIDEO_FORMATS+1] = 
-{
-// 0 - Unused
-{ false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-// 1 - 640x480p
-{ true, 640, 480, 0, 800, 160, 525, 45, 25.175, 16, 96, 48, 0, 10, 2, 33, 0 },
-// 2 - 720x480p
-{ true, 720, 480, 0, 858, 138, 525, 45, 27, 16, 62, 60, 0, 9, 6, 30, 0 },
-// 3 - 720x480p
-{ true, 720, 480, 0, 858, 138, 525, 45, 27, 16, 62, 60, 0, 9, 6, 30, 0 },
-// 4 - 1280x720p
-{ true, 1280, 720, 0, 1650, 370, 750, 30, 74.25, 110, 40, 220, 1, 5, 5, 20, 1 },
-// 5 - 1920x1080i
-{ true, 1920, 1080, 1, 2200, 280, 1125, 22.5, 74.25, 88, 44, 148, 1, 2, 5, 15, 1 },
-// 6 - 720(1440)x480i
-{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
-// 7 - 720(1440)x480i
-{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
-// 8 - 720(1440)x240p
-{ false, 1440, 240, 0, 1716, 276, 262, 22, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
-// 9 - 720(1440)x240p
-{ false, 1440, 240, 0, 1716, 276, 262, 22, 27, 38, 124, 114, 0, 4, 3, 15, 0 },
-// 10 - 2880x480i
-{ false, 2880, 480, 1, 3432, 552, 525, 22.5, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
-// 11 - 2880x480i
-{ false, 2880, 480, 1, 3432, 552, 525, 22.5, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
-// 12 - 2880x240p
-{ false, 2880, 240, 0, 3432, 552, 262, 22, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
-// 13 - 2880x240p
-{ false, 2880, 240, 0, 3432, 552, 262, 22, 54, 76, 248, 228, 0, 4, 3, 15, 0 },
-// 14 - 1440x480p
-{ false, 1440, 480, 0, 1716, 276, 525, 45, 54, 32, 124, 120, 0, 9, 6, 30, 0 },
-// 15 - 1440x480p
-{ false, 1440, 480, 0, 1716, 276, 525, 45, 54, 32, 124, 120, 0, 9, 6, 30, 0 },
-// 16 - 1920x1080p
-{ true, 1920, 1080, 0, 2200, 280, 1125, 45, 148.5, 88, 44, 148, 1, 4, 5, 36, 1 },
-// 17 - 720x576p
-{ true, 720, 576, 0, 864, 144, 625, 49, 27, 12, 64, 68, 0, 5, 5, 39, 0 },
-// 18 - 720x576p
-{ true, 720, 576, 0, 864, 144, 625, 49, 27, 12, 64, 68, 0, 5, 5, 39, 0 },
-// 19 - 1280x720p
-{ true, 1280, 720, 0, 1980, 700, 750, 30, 74.25, 440, 40, 220, 1, 5, 5, 20, 1 },
-// 20 - 1920x1080i
-{ true, 1920, 1080, 1, 2640, 720, 1125, 22.5, 74.25, 528, 44, 148, 1, 2, 5, 15, 1 },
-// 21 - 720(1440)x576i
-{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
-// 22 - 720(1440)x576i
-{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
-// 23 - 720(1440)x288p
-{ false, 1440, 288, 0, 1728, 288, 312, 24, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
-// 24 - 720(1440)x288p
-{ false, 1440, 288, 0, 1728, 288, 312, 24, 27, 24, 126, 138, 0, 2, 3, 19, 0 },
-// 25 - 2880x576i
-{ false, 2880, 576, 1, 3456, 576, 625, 24.5, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
-// 26 - 2880x576i
-{ false, 2880, 576, 1, 3456, 576, 625, 24.5, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
-// 27 - 2880x288p
-{ false, 2880, 288, 0, 3456, 576, 312, 24, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
-// 28 - 2880x288p
-{ false, 2880, 288, 0, 3456, 576, 312, 24, 54, 48, 252, 276, 0, 2, 3, 19, 0 },
-// 29 - 1440x576p
-{ false, 1440, 576, 0, 1728, 288, 625, 49, 54, 24, 128, 136, 0, 5, 5, 39, 0 },
-// 30 - 1440x576p
-{ false, 1440, 576, 0, 1728, 288, 625, 49, 54, 24, 128, 136, 0, 5, 5, 39, 0 },
-// 31 - 1920x1080p
-{ true, 1920, 1080, 0, 2640, 720, 1125, 45, 148.5, 528, 44, 148, 1, 4, 5, 36, 1 },
-// 32 - 1920x1080p
-{ true, 1920, 1080, 0, 2750, 830, 1125, 45, 74.25, 638, 44, 148, 1, 4, 5, 36, 1 },
-// 33 - 1920x1080p
-{ true, 1920, 1080, 0, 2640, 720, 1125, 45, 74.25, 528, 44, 148, 1, 4, 5, 36, 1 },
-// 34 - 1920x1080p
-{ true, 1920, 1080, 0, 2200, 280, 1125, 45, 74.25, 88, 44, 148, 1, 4, 5, 36, 1 },
-// 35 - 2880x480p
-{ false, 2880, 480, 0, 3432, 552, 525, 45, 108, 64, 248, 240, 0, 9, 6, 30, 0 },
-// 36 - 2880x480p
-{ false, 2880, 480, 0, 3432, 552, 525, 45, 108, 64, 248, 240, 0, 9, 6, 30, 0 },
-// 37 - 2880x576p
-{ false, 2880, 576, 0, 3456, 576, 625, 49, 108, 48, 256, 272, 0, 5, 5, 39, 0 },
-// 38 - 2880x576p
-{ false, 2880, 576, 0, 3456, 576, 625, 49, 108, 48, 256, 272, 0, 5, 5, 39, 0 },
-// 39 - 1920x1080i
-{ true, 1920, 1080, 1, 2304, 384, 1250, 85, 72, 32, 168, 184, 1, 23, 5, 57, 0 },
-// 40 - 1920x1080i
-{ true, 1920, 1080, 1, 2640, 720, 1125, 22.5, 148.5, 528, 44, 148, 1, 2, 5, 15, 1 },
-// 41 - 1280x720p
-{ true, 1280, 720, 0, 1980, 700, 750, 30, 148.5, 440, 40, 220, 1, 5, 5, 20, 1 },
-// 42 - 720x576
-{ true, 720, 576, 0, 864, 144, 625, 49, 54, 12, 64, 68, 0, 5, 5, 39, 0 },
-// 43 - 720x576p
-{ true, 720, 576, 0, 864, 144, 625, 49, 54, 12, 64, 68, 0, 5, 5, 39, 0 },
-// 44 - 720(1440)x576i
-{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 54.0, 24, 12, 138, 0, 2, 3, 19, 0 },
-// 45 - 720(1440)x576i
-{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 54.0, 24, 6, 138, 0, 2, 3, 19, 0 },
-// 46 - 1920x1080i
-{ true, 1920, 1080, 1, 2200, 280, 1125, 22.5, 148.5, 88, 44, 148, 1, 2, 5, 15, 1 },
-// 47 - 1280x720p
-{ true, 1280, 720, 0, 1650, 370, 750, 30, 148.5, 110, 40, 220, 1, 5, 5, 20, 1 },
-// 48 - 720x480p
-{ true, 720, 480, 0, 858, 138, 525, 45, 54.0, 16, 62, 60, 0, 9, 6, 30, 0 },
-// 49 - 720x480p
-{ true, 720, 480, 0, 858, 138, 525, 45, 54.0, 16, 62, 60, 0, 9, 6, 30, 0 },
-// 50 - 720(1440)x480i
-{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 54.0, 38, 12, 114, 0, 4, 3, 15, 0 },
-// 51 - 720(1440)x480i
-{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 54.0, 38, 4, 114, 0, 4, 3, 15, 0 },
-// 52 - 720x576p
-{ true, 720, 576, 0, 864, 144, 625, 49, 108.0, 12, 64, 68, 0, 5, 5, 39, 0 },
-// 53 - 720x576p
-{ true, 720, 576, 0, 864, 144, 625, 49, 108.0, 12, 64, 68, 0, 5, 5, 39, 0 },
-// 54 - 720(1440)x576i
-{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 108.0, 24, 12, 138, 0, 2, 3, 19, 0 },
-// 55 - 720(1440)x576i
-{ false, 1440, 576, 1, 1728, 288, 625, 24.5, 108.0, 24, 6, 138, 0, 2, 3, 19, 0 },
-// 56 - 720x480p
-{ true, 720, 480, 0, 858, 138, 525, 45, 108.108, 16, 62, 60, 0, 9, 6, 30, 0 },
-// 57 - 720x480p
-{ true, 720, 480, 0, 858, 138, 525, 45, 108.108, 16, 62, 60, 0, 9, 6, 30, 0 },
-// 58 - 720(1440)x480i
-{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 108.108, 38, 12, 114, 0, 4, 3, 15, 0 },
-// 59 - 720(1440)x480i
-{ false, 1440, 480, 1, 1716, 276, 525, 22.5, 108.108, 38, 4, 114, 0, 4, 3, 15, 0 },
-// 60 - 1280x720p
-{ true, 1280, 720, 0, 3300, 2020, 750, 30, 59.4, 1760, 40, 220, 1, 5, 5, 20, 1 },
-// 61 - 1280x720p
-{ true, 1280, 720, 0, 3960, 2680, 750, 30, 74.25, 2420, 40, 220, 1, 5, 5, 20, 1 },
-// 62 - 1280x720p
-{ true, 1280, 720, 0, 3300, 2020, 750, 30, 74.25, 1760, 40, 220, 1, 5, 5, 20, 1 },
-// 63 - 1920x1080p
-{ true, 1920, 1080, 0, 2200, 280, 1125, 45, 297.0, 88, 44, 148, 1, 4, 5, 36, 1 },
-// 64 - 1920x1080p
-{ true, 1920, 1080, 0, 2640, 720, 1125, 45, 297.0, 528, 44, 148, 1, 4, 5, 36, 1 }
-};
-
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 __private_extern__ IOReturn
@@ -841,49 +682,6 @@ TimingToHost( const IODetailedTimingInformationV2 * _t1, IODetailedTimingInforma
     t2->horizontalSyncLevel      = OSReadBigInt32(&t1->horizontalSyncLevel, 0);
     t2->verticalSyncConfig       = OSReadBigInt32(&t1->verticalSyncConfig, 0);
     t2->verticalSyncLevel        = OSReadBigInt32(&t1->verticalSyncLevel, 0);
-}
-
-static IOReturn
-CEAVideoFormatToDetailedTiming( int videoCode, IODetailedTimingInformation * timing )
-{
-    bzero( timing, sizeof( IODetailedTimingInformation) );
-
-    if( !videoCode || (videoCode > MAX_CEA861_VIDEO_FORMATS) )
-        return( kIOReturnBadArgument );
-
-    const CEAVideoFormatData * mode = &CEAVideoFormats[videoCode];
-
-    if( !mode->supported )
-        return( kIOReturnUnsupported );
-                
-    timing->pixelClock          = (UInt64) (mode->pClk * 1000000.0);
-    timing->maxPixelClock       = timing->pixelClock;
-    timing->minPixelClock       = timing->pixelClock;
-
-    timing->horizontalActive    = mode->hActive;
-    timing->verticalActive      = mode->vActive;
-
-    timing->horizontalBlanking  = mode->hBlank;
-    timing->verticalBlanking    = mode->vTotal - mode->vActive;
-
-    timing->horizontalSyncOffset        = mode->hFront;
-    timing->horizontalSyncPulseWidth    = mode->hSync;
-    timing->horizontalSyncConfig        = mode->hPolarity ? kIOSyncPositivePolarity : 0;
-
-    if( mode->interlaced )
-    {
-        timing->verticalSyncOffset      = mode->vFront << 1;
-        timing->verticalSyncPulseWidth  = mode->vSync << 1;
-        timing->signalConfig            |= kIOInterlacedCEATiming;
-    }
-    else
-    {
-        timing->verticalSyncOffset      = mode->vFront;
-        timing->verticalSyncPulseWidth  = mode->vSync;
-    }
-    timing->verticalSyncConfig          = mode->vPolarity ? kIOSyncPositivePolarity : 0;
-        
-    return( kIOReturnSuccess );
 }
 
 static IOReturn
@@ -1719,33 +1517,78 @@ InstallTiming( IOFBConnectRef                connectRef,
 }
 
 static kern_return_t
-InstallFromCEAShortVideoDesc( IOFBConnectRef connectRef, UInt8 * data )
+InstallFromCEAShortVideoDesc( IOFBConnectRef connectRef, UInt8 * bytes )
 {
-    int length = (data[0] & 0x1f);
-    int offset = 1;
+    IOReturn     err = kIOReturnSuccess;
+    int          length;
+    int          offset;
     IOOptionBits flags;
+    uint8_t      code;
+	CFArrayRef   array;
+	CFDataRef    data;
 
     IOFBDisplayModeDescription modeDesc;
     IOTimingInformation * timing = &modeDesc.timingInfo;
 
+	array = CFDictionaryGetValue( gIOGraphicsProperties, CFSTR("cea-modes") );
+	if (!array) return (kIOReturnUnsupported);
+
     bzero( &modeDesc, sizeof( modeDesc ));
     timing->flags = kIODetailedTimingValid;
 
-    IOReturn err = kIOReturnSuccess;
-
-    while (offset < (length + 1))
+    length = (bytes[0] & 0x1f);
+    for (offset = 1; offset < (length + 1); offset++)
     {
-        err = CEAVideoFormatToDetailedTiming( (data[offset] & 0x7F), (IODetailedTimingInformation *) &timing->detailedInfo.v2 );
-        if (kIOReturnSuccess == err)
-        {
-            flags = kDisplayModeValidFlag | kDisplayModeSafeFlag;
-            if(false && connectRef->hasHDMI && (data[offset] & 0x80))
-                flags |= kDisplayModeDefaultFlag;
+        code = bytes[offset] & 0x7F;
+		if (code > CFArrayGetCount(array)) continue;
+		data = CFArrayGetValueAtIndex(array, code);
+		if (CFDataGetTypeID() != CFGetTypeID(data)) continue;
+		if (CFDataGetLength(data) != sizeof(timing->detailedInfo.v2)) continue;
+		CFDataGetBytes(data, CFRangeMake(0, sizeof(timing->detailedInfo.v2)), 
+							(UInt8 *) &timing->detailedInfo.v2);
 
-            modeDesc.info.flags = flags;
-            err = InstallTiming( connectRef, &modeDesc, kIOFBEDIDDetailedMode );
-        }
-        offset++;
+		flags = kDisplayModeValidFlag | kDisplayModeSafeFlag;
+		if (false && connectRef->hasHDMI && (bytes[offset] & 0x80))
+			flags |= kDisplayModeDefaultFlag;
+
+		modeDesc.info.flags = flags;
+		err = InstallTiming( connectRef, &modeDesc, kIOFBEDIDDetailedMode );
+    }
+
+    return err;
+}
+
+static kern_return_t
+InstallFromHDMIVIC( IOFBConnectRef connectRef, uint32_t count, uint8_t * vics )
+{
+    IOReturn     err = kIOReturnSuccess;
+	uint32_t     idx;
+    uint8_t      code;
+    IOOptionBits flags;
+	CFArrayRef   array;
+	CFDataRef    data;
+
+    IOFBDisplayModeDescription modeDesc;
+    IOTimingInformation *      timing = &modeDesc.timingInfo;
+
+	array = CFDictionaryGetValue( gIOGraphicsProperties, CFSTR("hdmi-vic-modes") );
+	if (!array) return (kIOReturnUnsupported);
+
+    bzero( &modeDesc, sizeof( modeDesc ));
+    timing->flags = kIODetailedTimingValid;
+
+	for (idx = 0; idx < count; idx++)
+    {
+		code = vics[idx];
+		if (code > CFArrayGetCount(array)) continue;
+		data = CFArrayGetValueAtIndex(array, code);
+		if (CFDataGetTypeID() != CFGetTypeID(data)) continue;
+		if (CFDataGetLength(data) != sizeof(timing->detailedInfo.v2)) continue;
+		CFDataGetBytes(data, CFRangeMake(0, sizeof(timing->detailedInfo.v2)), 
+							(UInt8 *) &timing->detailedInfo.v2);
+		flags = kDisplayModeValidFlag | kDisplayModeSafeFlag;
+		modeDesc.info.flags = flags;
+		err = InstallTiming( connectRef, &modeDesc, kIOFBEDIDDetailedMode );
     }
 
     return err;
@@ -1860,7 +1703,7 @@ InstallFromEDIDDesc( IOFBConnectRef connectRef,
 	// sanity checks against display size
 	if (imageWidth && connectRef->displayImageWidth)
 	{
-		if ((imageWidth < (connectRef->displayImageWidth / 2))
+		if (((8 * imageWidth) < (5 * connectRef->displayImageWidth))
 	     || (imageWidth > (connectRef->displayImageWidth + 9)))
 		{
 			imageWidth = 0;
@@ -1868,7 +1711,7 @@ InstallFromEDIDDesc( IOFBConnectRef connectRef,
 	}
 	if (imageHeight && connectRef->displayImageHeight)
 	{
-		if ((imageHeight < (connectRef->displayImageHeight / 2))
+		if (((8 * imageHeight) < (5 * connectRef->displayImageHeight))
 	     || (imageHeight > (connectRef->displayImageHeight + 9)))
 		{
 			imageHeight = 0;
@@ -2500,18 +2343,45 @@ InstallCEA861EXTColor( IOFBConnectRef connectRef, EDID * edid __unused, CEA861EX
                 // HDMI Vendor Specific Data Block (HDMI 1.3a, p.119)
                 case 0x60:
                 {
-                    DEBG( connectRef, "Found HDMI VSDB: offset=%d\n", (int) (index + 4) );
+					if (length < 4) break;
+
+					if (connectRef->displayAttributes)
+					{
+						CFMutableDataRef data;
+						CFStringRef key;
+						char name[strlen("IODisplayVSDB") + 10];
+						sprintf(name, "IODisplayVSDB%02X%02X%02X", 
+								ext->data[index+1], ext->data[index+2], ext->data[index+3]);
+						key = CFStringCreateWithCString(kCFAllocatorDefault, name,
+														kCFStringEncodingMacRoman);
+						if (key)
+						{
+							data = (CFMutableDataRef) CFDictionaryGetValue(connectRef->displayAttributes, key);
+							if (!data)
+							{
+								data = CFDataCreateMutable(kCFAllocatorDefault, 0);
+								if (data)
+								{
+									CFDictionarySetValue(connectRef->displayAttributes, key, data);
+									CFRelease(data);
+								}
+							}
+							if (data) CFDataAppendBytes(data, &ext->data[index + 4], length - 4);
+							CFRelease(key);
+						}
+					}
+                    DEBG( connectRef, "Found 24-bit IEEE Registration Identifier (0x%02x%02x%02x)\n", 
+                            ext->data[index+3], ext->data[index+2], ext->data[index+1] );
+
                     if ((ext->data[index+1] != 0x03) 
                       || (ext->data[index+2] != 0x0C)
                       || (ext->data[index+3] != 0x00))
                         break;
 
-                    DEBG( connectRef, "Found 24-bit IEEE Registration Identifier (0x%02x%02x%02x)\n", 
-                            ext->data[index+3], ext->data[index+2], ext->data[index+1] );
+                    DEBG( connectRef, "Found HDMI VSDB: offset=%d\n", (int) (index + 4) );
                     connectRef->hasHDMI = true;
 
-                    if (length < 7)
-                        break;
+                    if (length < 7) break;
 
                     uint32_t depths;
                     uint8_t byte;
@@ -2569,6 +2439,40 @@ InstallCEA861EXT( IOFBConnectRef connectRef, EDID * edid, CEA861EXT * ext, Boole
                         InstallFromCEAShortVideoDesc( connectRef, &ext->data[index] );
                     connectRef->hasShortVideoDescriptors = true;
                     break;
+
+                // HDMI Vendor Specific Data Block (HDMI 1.3a, p.119)
+                case 0x60:
+                {
+					uint32_t vicOffset, vicCount;
+
+					if (length < 8) break;
+                    if ((ext->data[index+1] != 0x03) 
+                     || (ext->data[index+2] != 0x0C)
+                     || (ext->data[index+3] != 0x00)) break;
+
+                    if (ext->data[index+7])
+                    {
+                    	connectRef->dualLinkCrossover = ext->data[index+7] * 5000000ULL;
+  				    }
+
+                    if (!installModes) break;
+					if (length < 9)    break;
+					// hdmi video present?
+					if (!(0x20 & ext->data[index + 8])) break;
+					vicOffset = 10;
+					// latency fields present?
+					if (0x80 & ext->data[index + 8]) vicOffset += 2;
+					if (0x40 & ext->data[index + 8]) vicOffset += 2;
+
+					if (vicOffset >= length) break;
+                    vicCount = ext->data[index + vicOffset];
+					vicCount >>= 5;
+					vicOffset++;
+					if ((vicOffset + vicCount) > length) vicCount = length - vicOffset;
+					vicOffset += index;
+                    DEBG( connectRef, "Found HDMI VICs %d@%d\n", vicCount, vicOffset );
+					InstallFromHDMIVIC(connectRef, vicCount, &ext->data[vicOffset]);
+				}
             }
             index += length;
         }
@@ -2685,6 +2589,11 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
     connectRef->numGTFCurves         = 1;
     bcopy(&defaultGTFCurves, &connectRef->gtfCurves, sizeof(connectRef->gtfCurves));
 
+	if (connectRef->displayAttributes) CFRelease(connectRef->displayAttributes);
+	connectRef->displayAttributes = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+													&kCFTypeDictionaryKeyCallBacks,
+													&kCFTypeDictionaryValueCallBacks);
+
     // defaults for no DIEXT
     if (CFDictionaryGetValue(connectRef->overrides, CFSTR(kIODisplayIsDigitalKey)))
     {
@@ -2740,7 +2649,8 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
 
         if (2 & edid->featureSupport)
         {}
-        else if ((edid->version > 1) || (edid->revision >= 3))
+        else if ((kDisplayAppleVendorID == connectRef->displayVendor) 
+        	  && ((edid->version > 1) || (edid->revision >= 3)))
         {
             checkDI = true;
         }
@@ -2911,7 +2821,7 @@ IODisplayInstallTimings( IOFBConnectRef connectRef )
 
     IODisplayGetAspect( connectRef );
 
-    if (edidData)
+    if (edidData && edid)
     {
 	count = CFDataGetLength(edidData);
 	if ((size_t) count > sizeof(EDID))
@@ -3025,6 +2935,14 @@ enum {
     kDisplayGestaltBrightnessAffectsGammaMask   = (1 << 0),
     kDisplayGestaltViewAngleAffectsGammaMask    = (1 << 1)
 };
+
+static void 
+IODisplayDictAddValues(const void *key, const void *value, void *context)
+{
+    CFMutableDictionaryRef dict = context;
+	// add if not exists
+    CFDictionaryAddValue(dict, key, value);
+}
 
 CFDictionaryRef
 _IODisplayCreateInfoDictionary(
@@ -3163,9 +3081,12 @@ _IODisplayCreateInfoDictionary(
         if( options & kIODisplayMatchingInfo)
             continue;
 
-        // if !exist add display edid
-        if( data)
-            CFDictionaryAddValue( dict, CFSTR(kIODisplayEDIDKey), data);
+        if (data)
+        {
+			// if !exist add display edid
+            CFDictionaryAddValue(dict, CFSTR(kIODisplayEDIDKey), data);
+            CFDictionaryAddValue(dict, CFSTR(kIODisplayEDIDOriginalKey), data);
+        }
         // get final edid
         data = CFDictionaryGetValue(dict, CFSTR(kIODisplayEDIDKey));
         if (data)
@@ -3183,6 +3104,11 @@ _IODisplayCreateInfoDictionary(
 			obj = CFDictionaryGetValue( regDict, CFSTR(kIODisplayPrefKeyKey) );
 			if( obj)
 				CFDictionarySetValue( dict, CFSTR(kIODisplayPrefKeyKey), obj );
+
+			CFDictionaryRef attrDict;
+			attrDict = CFDictionaryGetValue(regDict, CFSTR(kIODisplayAttributesKey));
+            if (attrDict && (CFDictionaryGetTypeID() == CFGetTypeID(attrDict)))
+				CFDictionaryApplyFunction(attrDict, &IODisplayDictAddValues, dict);
 		}
 
         if( IOObjectConformsTo( service, "IOBacklightDisplay"))

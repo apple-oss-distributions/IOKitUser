@@ -21,7 +21,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <IOKit/IODataQueueClient.h>
+#include "IODataQueueClientPrivate.h"
 #include <IOKit/IODataQueueShared.h>
 
 #include <mach/message.h>
@@ -29,6 +29,7 @@
 #include <mach/port.h>
 #include <mach/mach_init.h>
 #include <IOKit/OSMessageNotification.h>
+#include <libkern/OSAtomic.h>
 
 
 static IOReturn _IODataQueueSendDataAvailableNotification(IODataQueueMemory *dataQueue);
@@ -43,27 +44,27 @@ IODataQueueEntry *IODataQueuePeek(IODataQueueMemory *dataQueue)
     IODataQueueEntry *entry = 0;
 
     if (dataQueue && (dataQueue->head != dataQueue->tail)) {
-        IODataQueueEntry *  head		= 0;
-        UInt32              headSize    = 0;
+            IODataQueueEntry *  head        = 0;
+            UInt32              headSize    = 0;
         UInt32              headOffset  = dataQueue->head;
-        UInt32              queueSize   = dataQueue->queueSize;
-        
-        head 		= (IODataQueueEntry *)((char *)dataQueue->queue + headOffset);
-        headSize 	= head->size;
-                
-		// Check if there's enough room before the end of the queue for a header.
-        // If there is room, check if there's enough room to hold the header and
-        // the data.
+            UInt32              queueSize   = dataQueue->queueSize;
+            
+            head         = (IODataQueueEntry *)((char *)dataQueue->queue + headOffset);
+            headSize     = head->size;
+                    
+            // Check if there's enough room before the end of the queue for a header.
+            // If there is room, check if there's enough room to hold the header and
+            // the data.
 
-        if ((headOffset + DATA_QUEUE_ENTRY_HEADER_SIZE > queueSize) ||
-            ((headOffset + headSize + DATA_QUEUE_ENTRY_HEADER_SIZE) > queueSize))
-        {
-            // No room for the header or the data, wrap to the beginning of the queue.
-            entry = dataQueue->queue;
-        } else {
-            entry = head;
+            if ((headOffset + DATA_QUEUE_ENTRY_HEADER_SIZE > queueSize) ||
+                ((headOffset + headSize + DATA_QUEUE_ENTRY_HEADER_SIZE) > queueSize))
+            {
+                // No room for the header or the data, wrap to the beginning of the queue.
+                entry = dataQueue->queue;
+            } else {
+                entry = head;
+            }
         }
-    }
 
     return entry;
 }
@@ -78,19 +79,19 @@ IODataQueueDequeue(IODataQueueMemory *dataQueue, void *data, uint32_t *dataSize)
 
     if (dataQueue) {
         if (dataQueue->head != dataQueue->tail) {
-            IODataQueueEntry *  head		= 0;
+            IODataQueueEntry *  head        = 0;
             UInt32              headSize    = 0;
             UInt32              headOffset  = dataQueue->head;
             UInt32              queueSize   = dataQueue->queueSize;
             
-            head 		= (IODataQueueEntry *)((char *)dataQueue->queue + headOffset);
-            headSize 	= head->size;
+            head         = (IODataQueueEntry *)((char *)dataQueue->queue + headOffset);
+            headSize     = head->size;
                         
             // we wraped around to beginning, so read from there
-			// either there was not even room for the header
-			if ((headOffset + DATA_QUEUE_ENTRY_HEADER_SIZE > queueSize) ||
-				// or there was room for the header, but not for the data
-				((headOffset + headSize + DATA_QUEUE_ENTRY_HEADER_SIZE) > queueSize)) {
+            // either there was not even room for the header
+            if ((headOffset + DATA_QUEUE_ENTRY_HEADER_SIZE > queueSize) ||
+                // or there was room for the header, but not for the data
+                ((headOffset + headSize + DATA_QUEUE_ENTRY_HEADER_SIZE) > queueSize)) {
                 entry       = dataQueue->queue;
                 entrySize   = entry->size;
                 newHeadOffset = entrySize + DATA_QUEUE_ENTRY_HEADER_SIZE;
@@ -107,7 +108,7 @@ IODataQueueDequeue(IODataQueueMemory *dataQueue, void *data, uint32_t *dataSize)
                 if (dataSize) {
                     if (entrySize <= *dataSize) {
                         memcpy(data, &(entry->data), entrySize);
-                        dataQueue->head = newHeadOffset;
+                        OSAtomicCompareAndSwap32Barrier(dataQueue->head, newHeadOffset, (int32_t *)&dataQueue->head);
                     } else {
                         retVal = kIOReturnNoSpace;
                     }
@@ -115,7 +116,7 @@ IODataQueueDequeue(IODataQueueMemory *dataQueue, void *data, uint32_t *dataSize)
                     retVal = kIOReturnBadArgument;
                 }
             } else {
-                dataQueue->head = newHeadOffset;
+                OSAtomicCompareAndSwap32Barrier(dataQueue->head, newHeadOffset, (int32_t *)&dataQueue->head);
             }
 
             // RY: Update the data size here.  This will
@@ -133,8 +134,8 @@ IODataQueueDequeue(IODataQueueMemory *dataQueue, void *data, uint32_t *dataSize)
     return retVal;
 }
 
-IOReturn
-IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
+static IOReturn
+__IODataQueueEnqueue(IODataQueueMemory *dataQueue, uint32_t dataSize, void *data, IODataQueueClientEnqueueReadBytesCallback callback, void * refcon)
 {
     UInt32              head        = dataQueue->head;  // volatile
     UInt32              tail        = dataQueue->tail;
@@ -150,7 +151,10 @@ IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
         {
             entry = (IODataQueueEntry *)((UInt8 *)dataQueue->queue + tail);
 
-            memcpy(&(entry->data), data, dataSize);
+            if ( data )
+                memcpy(&(entry->data), data, dataSize);
+            else if ( callback )
+                (*callback)(refcon, &(entry->data), dataSize);
 
             entry->size = dataSize;            
 
@@ -158,12 +162,16 @@ IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
             // exactly matches the available space at the end of the queue.
             // The tail can range from 0 to queueSize inclusive.
 
-            dataQueue->tail += entrySize;
+            OSAtomicAdd32Barrier(entrySize, (int32_t *)&dataQueue->tail);
         }
-        else if ( head > entrySize ) 	// Is there enough room at the beginning?
+        else if ( head > entrySize )     // Is there enough room at the beginning?
         {
             entry = (IODataQueueEntry *)((UInt8 *)dataQueue->queue);
-            memcpy(&(entry->data), data, dataSize);
+            
+            if ( data ) 
+                memcpy(&(entry->data), data, dataSize);
+            else if ( callback )
+                (*callback)(refcon, &(entry->data), dataSize);
 
             // Wrap around to the beginning, but do not allow the tail to catch
             // up to the head.
@@ -179,7 +187,7 @@ IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
                 ((IODataQueueEntry *)((UInt8 *)dataQueue->queue + tail))->size = dataSize;
             }
 
-            dataQueue->tail = entrySize;
+            OSAtomicCompareAndSwap32Barrier(dataQueue->tail, entrySize, (int32_t *)&dataQueue->tail);
         }
         else
         {
@@ -195,10 +203,14 @@ IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
         {
             entry = (IODataQueueEntry *)((UInt8 *)dataQueue->queue + tail);
 
-            memcpy(&(entry->data), data, dataSize);
+            if ( data )
+                memcpy(&(entry->data), data, dataSize);
+            else if ( callback )
+                (*callback)(refcon, &(entry->data), dataSize);
 
             entry->size = dataSize;
-            dataQueue->tail += entrySize;
+            
+            OSAtomicAdd32Barrier(entrySize, (int32_t *)&dataQueue->tail);
         }
         else
         {
@@ -209,7 +221,7 @@ IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
     // Send notification (via mach message) that data is available.    
     
     if ( retVal == kIOReturnSuccess ) {
-        if ( ( head == tail )               /* queue was empty prior to enqueue() */
+        if ( ( head == tail )                                                           /* queue was empty prior to enqueue() */
         ||   ( dataQueue->head == tail ) )  /* queue was emptied during enqueue() */
         {
             retVal = _IODataQueueSendDataAvailableNotification(dataQueue);
@@ -224,6 +236,20 @@ IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
 
     return retVal;
 }
+
+IOReturn
+IODataQueueEnqueue(IODataQueueMemory *dataQueue, void *data, uint32_t dataSize)
+{
+    return __IODataQueueEnqueue(dataQueue, dataSize, data, NULL, NULL);
+}
+
+
+IOReturn
+_IODataQueueEnqueueWithReadCallback(IODataQueueMemory *dataQueue, uint32_t dataSize, IODataQueueClientEnqueueReadBytesCallback callback, void * refcon)
+{
+    return __IODataQueueEnqueue(dataQueue, dataSize, NULL, callback, refcon);
+}
+
 
 IOReturn IODataQueueWaitForAvailableData(IODataQueueMemory *dataQueue, mach_port_t notifyPort)
 {
@@ -245,9 +271,9 @@ IOReturn IODataQueueWaitForAvailableData(IODataQueueMemory *dataQueue, mach_port
 
 mach_port_t IODataQueueAllocateNotificationPort()
 {
-    mach_port_t		port = MACH_PORT_NULL;
-    mach_port_limits_t	limits;
-    mach_msg_type_number_t	info_cnt;
+    mach_port_t        port = MACH_PORT_NULL;
+    mach_port_limits_t    limits;
+    mach_msg_type_number_t    info_cnt;
 
     mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &port);
 
@@ -259,7 +285,7 @@ mach_port_t IODataQueueAllocateNotificationPort()
                                 (mach_port_info_t)&limits,
                                 &info_cnt);
 
-    limits.mpl_qlimit = 1;	// Set queue to only 1 message
+    limits.mpl_qlimit = 1;    // Set queue to only 1 message
 
     mach_port_set_attributes(mach_task_self(),
                                 port,
@@ -303,12 +329,12 @@ IOReturn _IODataQueueSendDataAvailableNotification(IODataQueueMemory *dataQueue)
     if ( appendix->msgh.msgh_remote_port == MACH_PORT_NULL )
         return kIOReturnSuccess;  // return success if no port is declared
     
-    kern_return_t		kr;
+    kern_return_t        kr;
     mach_msg_header_t   msgh = appendix->msgh;
         
     kr = mach_msg(&msgh, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msgh.msgh_size, 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
     switch(kr) {
-        case MACH_SEND_TIMED_OUT:	// Notification already sent
+        case MACH_SEND_TIMED_OUT:    // Notification already sent
         case MACH_MSG_SUCCESS:
             break;
         default:

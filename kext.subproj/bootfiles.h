@@ -65,6 +65,8 @@
 
 /* The system extensions folder */
 #define kSystemExtensionsDir  "/System/Library/Extensions"
+/* The library extensions folder */
+#define kLibraryExtensionsDir  "/Library/Extensions"
 
 
 /* The booter configuration file */

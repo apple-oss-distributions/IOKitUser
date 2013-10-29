@@ -38,7 +38,7 @@
  * - Hides the _SYMBOL as __private_extern__ for iOS builds
  *
  */
-#if TARGET_OS_EMBEDDED
+#if TARGET_OS_IPHONE
 #define IOKIT_SC_SYMBOL(_RETURN, _SYMBOL)   __private_extern__ _RETURN _io_##_SYMBOL
 #else
 #define IOKIT_SC_SYMBOL(_RETURN, _SYMBOL)   extern const char _SYMBOL##_tmp7 __asm("$ld$hide$os10.7$_" #_SYMBOL ); \

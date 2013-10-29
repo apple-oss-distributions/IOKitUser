@@ -264,18 +264,32 @@ void __IOHIDDeviceNotification(
     
     CFRetain(device);
     
-    CFIndex index = 0;
-    CFIndex count = CFArrayGetCount(device->removalCallbackArray);
-    while ((index < count) && (count == CFArrayGetCount(device->removalCallbackArray))) {
-        CFDataRef infoRef = (CFDataRef)CFArrayGetValueAtIndex(device->removalCallbackArray, index);
-        IOHIDDeviceRemovalCallbackInfo *info = (IOHIDDeviceRemovalCallbackInfo *)CFDataGetBytePtr(infoRef);
-        if (info->callback)
-            info->callback(info->context, kIOReturnSuccess, device);
-        index++;
-    }
+    CFArrayRef  tempRemovalCallbackArray = CFArrayCreateCopy(CFGetAllocator(device), device->removalCallbackArray);
     
-    if (count != CFArrayGetCount(device->removalCallbackArray))
-        _IOHIDLog(ASL_LEVEL_ERR, "%s removal callbacks altered while in use by IOHIDDeviceRef %p\n", __func__, device);
+    if ( tempRemovalCallbackArray ) {
+        
+        CFIndex count = CFArrayGetCount(tempRemovalCallbackArray);
+        CFIndex index = 0;
+        
+        for ( index=0; index<count; index++) {
+            IOHIDDeviceRemovalCallbackInfo *    info;
+            CFDataRef                           infoRef;
+        
+            infoRef = (CFDataRef)CFArrayGetValueAtIndex(tempRemovalCallbackArray, index);
+            if ( !infoRef )
+                continue;
+            
+            info = (IOHIDDeviceRemovalCallbackInfo *)CFDataGetBytePtr(infoRef);
+            if ( !info )
+                continue;
+            
+            if (!info->callback)
+                continue;
+        
+            info->callback(info->context, kIOReturnSuccess, device);
+        }
+        CFRelease(tempRemovalCallbackArray);
+    }
 
     CFRelease(device);
 }
@@ -310,40 +324,29 @@ IOHIDDeviceRef IOHIDDeviceCreate(
     IOCFPlugInInterface **          plugInInterface     = NULL;
     IOHIDDeviceDeviceInterface **   deviceInterface     = NULL;
     IOHIDDeviceRef                  device              = NULL;
-    kern_return_t                   kr                  = kIOReturnSuccess;
-    HRESULT                         result              = S_FALSE;
     SInt32                          score               = 0;
 
-    kr = IOObjectRetain(service);
-    
-    if ( kr != kIOReturnSuccess )
-        return NULL;
-        
-    kr = IOCreatePlugInInterfaceForService(service, kIOHIDDeviceTypeID, kIOCFPlugInInterfaceID, &plugInInterface, &score);
-                
-    if ( kr != kIOReturnSuccess ) 
-	return NULL;
+    require_noerr(IOObjectRetain(service), retain_fail);
+    require_noerr(IOCreatePlugInInterfaceForService(service, kIOHIDDeviceTypeID, kIOCFPlugInInterfaceID, &plugInInterface, &score), plugin_fail);
+    require_noerr((*plugInInterface)->QueryInterface(plugInInterface, CFUUIDGetUUIDBytes(kIOHIDDeviceDeviceInterfaceID), (LPVOID)&deviceInterface), query_fail);
 
-    result = (*plugInInterface)->QueryInterface(plugInInterface, CFUUIDGetUUIDBytes(kIOHIDDeviceDeviceInterfaceID), (LPVOID)&deviceInterface);
-        
-    if ( result != S_OK || !deviceInterface ) {
-        IODestroyPlugInInterface(plugInInterface);
-        return NULL;
-    }                                                                                                                                                                                
-    
     device = __IOHIDDeviceCreate(allocator, NULL);
-
-    if ( !device ) {
-        (*deviceInterface)->Release(deviceInterface);
-        IODestroyPlugInInterface(plugInInterface);
-        return NULL;
-    }
+    require(device, create_fail);
         
     device->plugInInterface = plugInInterface;
     device->deviceInterface = deviceInterface;
     device->service         = service;
 
     return device;
+    
+create_fail:
+    (*deviceInterface)->Release(deviceInterface);
+query_fail:
+    IODestroyPlugInInterface(plugInInterface);
+plugin_fail:
+    IOObjectRelease(service);
+retain_fail:
+    return NULL;
 }
 
 //------------------------------------------------------------------------------
@@ -391,24 +394,24 @@ Boolean IOHIDDeviceConformsTo(
     Boolean                 doesConform = FALSE;
     CFMutableDictionaryRef  matching    = NULL;
     
-    matching = CFDictionaryCreateMutable(kCFAllocatorDefault, 4, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    matching = CFDictionaryCreateMutable(CFGetAllocator(device), 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     if (matching) {
         CFArrayRef  elements    = NULL;
         CFNumberRef number      = NULL;
         uint32_t    value;
     
         value   = kIOHIDElementTypeCollection;
-        number  = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &value);
+        number  = CFNumberCreate(CFGetAllocator(device), kCFNumberIntType, &value);
         CFDictionarySetValue(matching, CFSTR(kIOHIDElementTypeKey), number);
         CFRelease(number);
         
         value   = usagePage;
-        number  = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &value);
+        number  = CFNumberCreate(CFGetAllocator(device), kCFNumberIntType, &value);
         CFDictionarySetValue(matching, CFSTR(kIOHIDElementUsagePageKey), number);
         CFRelease(number);
 
         value   = usage;
-        number  = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &value);
+        number  = CFNumberCreate(CFGetAllocator(device), kCFNumberIntType, &value);
         CFDictionarySetValue(matching, CFSTR(kIOHIDElementUsageKey), number);
         CFRelease(number);
         
@@ -473,7 +476,7 @@ Boolean IOHIDDeviceSetProperty(
                                 CFTypeRef                       property)
 {
     if (!device->properties) {
-        device->properties = CFDictionaryCreateMutable(kCFAllocatorDefault, 
+        device->properties = CFDictionaryCreateMutable(CFGetAllocator(device),
                                                         0,
                                                         &kCFTypeDictionaryKeyCallBacks,
                                                         &kCFTypeDictionaryValueCallBacks);
@@ -523,7 +526,7 @@ CFArrayRef IOHIDDeviceCopyMatchingElements(
             _IOHIDElementSetDevice(element, device);
             
             if (device->elements || 
-                (device->elements = CFSetCreateMutable(kCFAllocatorDefault, 
+                (device->elements = CFSetCreateMutable(CFGetAllocator(device),
                                                         0,
                                                         &kCFTypeSetCallBacks))) {
                 if (!CFSetContainsValue(device->elements, element)) {
@@ -717,8 +720,8 @@ CFArrayRef __IOHIDDeviceCopyMatchingInputElements(IOHIDDeviceRef device, CFArray
         
         CFStringRef key = CFSTR(kIOHIDElementTypeKey);
         for ( index=0; index<count; index++ ) {            
-            CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &inputTypes[index]);
-            matching[index] = CFDictionaryCreate(kCFAllocatorDefault, 
+            CFNumberRef number = CFNumberCreate(CFGetAllocator(device), kCFNumberIntType, &inputTypes[index]);
+            matching[index] = CFDictionaryCreate(CFGetAllocator(device),
                                                  (const void **)&key,
                                                  (const void **)&number,
                                                  1, 
@@ -727,7 +730,7 @@ CFArrayRef __IOHIDDeviceCopyMatchingInputElements(IOHIDDeviceRef device, CFArray
             CFRelease(number);
         }
         
-        multiple = CFArrayCreate(kCFAllocatorDefault, (const void **)matching, count, &kCFTypeArrayCallBacks);
+        multiple = CFArrayCreate(CFGetAllocator(device), (const void **)matching, count, &kCFTypeArrayCallBacks);
         
         for ( index=0; index<count; index++ )
             CFRelease(matching[index]);
@@ -746,7 +749,7 @@ CFArrayRef __IOHIDDeviceCopyMatchingInputElements(IOHIDDeviceRef device, CFArray
             continue;
             
         if ( !inputElements )
-            inputElements = CFArrayCreateMutableCopy(   kCFAllocatorDefault, 
+            inputElements = CFArrayCreateMutableCopy(   CFGetAllocator(device),
                                                         0, 
                                                         elements);
         else
@@ -814,7 +817,7 @@ void IOHIDDeviceRegisterInputValueCallback(
     if (callback) {
         // adding a callback
         if ( !device->queue ) {
-            device->queue = IOHIDQueueCreate(kCFAllocatorDefault, device, 20, 0);
+            device->queue = IOHIDQueueCreate(CFGetAllocator(device), device, 20, 0);
             require(device->queue, cleanup);
             
             __IOHIDDeviceRegisterMatchingInputElements(device, device->queue, device->inputMatchingMultiple);
@@ -870,7 +873,7 @@ void IOHIDDeviceSetInputValueMatching(
                                 CFDictionaryRef                 matching)
 {
     if ( matching ) {
-        CFArrayRef multiple = CFArrayCreate(kCFAllocatorDefault, (const void **)&matching, 1, &kCFTypeArrayCallBacks);
+        CFArrayRef multiple = CFArrayCreate(CFGetAllocator(device), (const void **)&matching, 1, &kCFTypeArrayCallBacks);
         
         IOHIDDeviceSetInputValueMatchingMultiple(device, multiple);
         
@@ -1011,7 +1014,7 @@ IOReturn IOHIDDeviceSetValueMultipleWithCallback(
         return kIOReturnBadArgument;
            
     do {
-        transaction = IOHIDTransactionCreate(   kCFAllocatorDefault, 
+        transaction = IOHIDTransactionCreate(   CFGetAllocator(device),
                                                 device,
                                                 kIOHIDTransactionDirectionTypeOutput,
                                                 0);
@@ -1051,7 +1054,7 @@ IOReturn IOHIDDeviceSetValueMultipleWithCallback(
             elementInfo->device     = device;
             elementInfo->callback   = callback;
             elementInfo->context    = context;
-            elementInfo->elements   = CFArrayCreate(kCFAllocatorDefault, (const void **)elements, count, &kCFTypeArrayCallBacks);
+            elementInfo->elements   = CFArrayCreate(CFGetAllocator(device), (const void **)elements, count, &kCFTypeArrayCallBacks);
         
             ret = IOHIDTransactionCommitWithCallback(transaction, timeout, __IOHIDDeviceTransactionCallback, elementInfo);
             
@@ -1169,7 +1172,7 @@ IOReturn IOHIDDeviceCopyValueMultipleWithCallback(
         return kIOReturnBadArgument;
            
     do {
-        transaction = IOHIDTransactionCreate(   kCFAllocatorDefault, 
+        transaction = IOHIDTransactionCreate(   CFGetAllocator(device),
                                                 device,
                                                 kIOHIDTransactionDirectionTypeInput,
                                                 0);
@@ -1194,7 +1197,7 @@ IOReturn IOHIDDeviceCopyValueMultipleWithCallback(
             elementInfo->device     = device;
             elementInfo->callback   = callback;
             elementInfo->context    = context;
-            elementInfo->elements   = CFArrayCreateCopy(kCFAllocatorDefault, elements);
+            elementInfo->elements   = CFArrayCreateCopy(CFGetAllocator(device), elements);
         
             ret = IOHIDTransactionCommitWithCallback(transaction, timeout, __IOHIDDeviceTransactionCallback, elementInfo);
             
@@ -1209,7 +1212,7 @@ IOReturn IOHIDDeviceCopyValueMultipleWithCallback(
                 break;
                 
             CFMutableDictionaryRef multiple = CFDictionaryCreateMutable(
-                                                    kCFAllocatorDefault, 
+                                                    CFGetAllocator(device),
                                                     count, 
                                                     &kCFCopyStringDictionaryKeyCallBacks, 
                                                     &kCFTypeDictionaryValueCallBacks);
@@ -1340,7 +1343,7 @@ void __IOHIDDeviceTransactionCallback(
             
             if ( count )
                 values = CFDictionaryCreateMutable(
-                                        kCFAllocatorDefault, 
+                                        CFGetAllocator(device), 
                                         count, 
                                         &kCFCopyStringDictionaryKeyCallBacks, 
                                         &kCFTypeDictionaryValueCallBacks);

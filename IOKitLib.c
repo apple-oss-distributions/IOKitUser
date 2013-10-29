@@ -31,6 +31,10 @@
 #include <mach/mach.h>
 #include <mach/mach_port.h>
 
+#if TARGET_IPHONE_SIMULATOR
+#include <servers/bootstrap.h>
+#endif
+
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/file.h>
@@ -106,11 +110,38 @@ __IOGetDefaultMasterPort()
 }
 
 kern_return_t
-IOMasterPort( mach_port_t bootstrapPort __unused,
-		mach_port_t * masterPort )
+#if TARGET_IPHONE_SIMULATOR
+IOMasterPort( mach_port_t bootstrapPort, mach_port_t * masterPort )
+#else
+IOMasterPort( mach_port_t bootstrapPort __unused, mach_port_t * masterPort )
+#endif
 {
     kern_return_t result = KERN_SUCCESS;
     mach_port_t host_port = 0;
+
+#if TARGET_IPHONE_SIMULATOR
+    /* Defaulting to bypass until <rdar://problem/13141176> is addressed */
+    static boolean_t use_iokitsimd = 0;
+    static dispatch_once_t once;
+
+     dispatch_once(&once, ^{
+        const char *value = getenv("IOS_SIMULATOR_IOKITSIMD");
+
+        if (value) {
+            use_iokitsimd = (*value == '1');
+        }
+
+        if (!use_iokitsimd)
+            asl_log(NULL, NULL, ASL_LEVEL_NOTICE,
+                    "IOKit.framework:IOMasterPort bypassing iokitsimd");
+    });
+
+    if (use_iokitsimd) {
+        if (bootstrapPort == MACH_PORT_NULL)
+            bootstrapPort = bootstrap_port;
+        return bootstrap_look_up(bootstrapPort, "com.apple.iokitsimd", masterPort);
+    }
+#endif
 
     host_port = mach_host_self();
     result = host_get_io_master(host_port, masterPort);

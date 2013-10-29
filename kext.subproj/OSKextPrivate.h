@@ -47,9 +47,9 @@
 /********************************************************************/
 #endif
 /*
- * Only the first is currently used.
+ * We use "/System/Library/Extensions" and "/Library/Extensions" - 11860417
  */
-#define _kOSKextNumSystemExtensionsFolders (1)
+#define _kOSKextNumSystemExtensionsFolders (2)
 
 #define _kOSKextSystemLibraryExtensionsFolder           \
             "/System/Library/Extensions"
