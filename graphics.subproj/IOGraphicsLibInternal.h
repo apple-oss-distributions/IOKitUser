@@ -332,7 +332,11 @@ struct DisplayIDBlock {
 };
 typedef struct DisplayIDBlock DisplayIDBlock;
 
-enum { kDIDBlockTypeDetailedType1 = 0x03 };
+enum {
+    kDIDBlockTypeProductIdentification  = 0x00,
+    kDIDBlockTypeDetailedType1          = 0x03,
+    kDIDBlockTypeVendorSpecific         = 0x7f
+};
 
 struct DisplayIDDetailedType1 {
     UInt8       pixelClock[3];
@@ -454,6 +458,9 @@ struct IOFBConnect
     UInt32                      defaultImageHeight;
     uint32_t                    displayImageWidth;
     uint32_t                    displayImageHeight;
+    int32_t                     nativeIndex;
+    uint32_t                    nativeWidth;
+    uint32_t                    nativeHeight;
     UInt64                      dualLinkCrossover;
     UInt32                      maxDisplayLinks;
     float                       nativeAspect;

@@ -30,6 +30,7 @@
 #include <IOKit/pwr_mgt/IOPMLibDefs.h>
 #include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/ps/IOPowerSources.h>
 #include <sys/cdefs.h>
 
 __BEGIN_DECLS
@@ -156,6 +157,16 @@ enum {
  */
 #define kIOPMSchedulePowerEventNotification                 "com.apple.system.IOPMSchedulePowerEventNotification"
 
+/*!
+ * @constant    kIOPMUserVisiblePowerEventNotification
+ * @abstract    Notification posted when IOPMSchedulePowerEvent or IOPMCancelScheduledPowerEvent is called
+ *              for a UserVisible event
+ * @discussion  i.e. this notify(3) notification fires every time the list of scheduled power events changes.
+ */
+#define kIOPMUserVisiblePowerEventNotification              "com.apple.system.powermanagement.uservisiblepowerevent"
+
+
+
 /*
  * @constant    kIOPMAutoWakeRelativeSeconds
  * @abstract    Internal only argument to <code>@link IOPMSchedulePowerEvent@/link</code> 
@@ -188,6 +199,95 @@ enum {
  *              IOPMSchedulePowerEvent(d, CFSTR("SleepCycler"), CFSTR(kIOPMAutoWakeRelativeSeconds) ); 
  */
 #define kIOPMAutoPowerRelativeSeconds                       kIOPMSettingDebugPowerRelativeKey
+
+
+/**************************************************
+*
+* Repeating Sleep/Wake/Shutdown/Restart API
+*
+**************************************************/
+/*!
+ * @functiongroup Repeating power events
+ */
+
+// Keys to index into CFDictionary returned by IOPSCopyRepeatingPowerEvents()
+#define     kIOPMRepeatingPowerOnKey        "RepeatingPowerOn"
+#define     kIOPMRepeatingPowerOffKey       "RepeatingPowerOff"
+
+#define     kIOPMAutoSleep                  "sleep"
+#define     kIOPMAutoShutdown               "shutdown"
+
+#define     kIOPMPowerEventLeewayKey        "leeway"
+
+#define     kIOPMPowerEventUserVisible      "UserVisible"
+
+// Keys to "days of week" bitfield for IOPMScheduleRepeatingPowerEvent()
+enum {
+    kIOPMMonday         = 1 << 0,
+    kIOPMTuesday        = 1 << 1,
+    kIOPMWednesday      = 1 << 2,
+    kIOPMThursday       = 1 << 3,
+    kIOPMFriday         = 1 << 4,
+    kIOPMSaturday       = 1 << 5,
+    kIOPMSunday         = 1 << 6
+};
+
+// Keys to index into sub-dictionaries of the dictionary returned by IOPSCopyRepeatingPowerEvents
+// Absolute time to schedule power on (stored as a CFNumberRef, type = kCFNumberIntType)
+//#define kIOPMPowerOnTimeKey                 "time"
+// Bitmask of days to schedule a wakeup for (CFNumberRef, type = kCFNumberIntType)
+#define kIOPMDaysOfWeekKey                  "weekdays"
+// Type of power on event (CFStringRef)
+//#define kIOPMTypeOfPowerOnKey               "typeofwake"
+
+/*  @function IOPMScheduleRepeatingPowerEvent
+ *  @abstract Schedules a repeating sleep, wake, shutdown, or restart
+ *  @discussion Private API to only be used by Energy Saver preferences panel. Note that repeating sleep & wakeup events are valid together, 
+ *              and shutdown & power on events are valid together, but you cannot mix sleep & power on, or shutdown & wakeup events.
+ *              Every time you call IOPMSchedueRepeatingPowerEvent, we will cancel all previously scheduled repeating events of that type, and any
+ *              scheduled repeating events of "incompatible" types, as I just described.
+ *  @param  events A CFDictionary containing two CFDictionaries at keys "RepeatingPowerOn" and "RepeatingPowerOff".
+                Each of those dictionaries contains keys for the type of sleep, the days_of_week, and the time_of_day. These arguments specify the
+                time, days, and type of power events.
+ *  @result kIOReturnSuccess on success, kIOReturnError or kIOReturnNotPrivileged otherwise.
+ */
+IOReturn IOPMScheduleRepeatingPowerEvent(CFDictionaryRef events);
+
+/*  @function IOPMCopyRepeatingPowerEvents
+ *  @abstract Gets the system
+ *  @discussion Private API to only be used by Energy Saver preferences panel. Copies the system's current repeating power on
+                and power off events.
+                The returned CFDictionary contains two CFDictionaries at keys "RepeatingPowerOn" and "RepeatingPowerOff".
+                Each of those dictionaries contains keys for the type of sleep, the days_of_week, and the time_of_day.
+ *  @result NULL on failure, CFDictionary (possibly empty) otherwise.
+ */
+ CFDictionaryRef IOPMCopyRepeatingPowerEvents(void);
+
+/*  @function IOPMScheduleRepeatingPowerEvent
+ *  @abstract Cancels all repeating power events
+ *  @result kIOReturnSuccess on success, kIOReturnError or kIOReturnNotPrivileged otherwise.
+ */ 
+IOReturn IOPMCancelAllRepeatingPowerEvents(void);
+
+
+/*!
+ * @function                    IOPMRequestSysWake
+ *
+ * @abstract                    Requests the system to wake up from sleep at the specified time
+ * @param request               Dictionary describing the wake request
+ *
+ * @discussion          
+ *      Request device to wake up at the specified time.
+ *
+ *      kIOPMPowerEventAppNameKey   CFStringRef, mandatory. Specifies the purpose of this wake and used for logging and debugging
+ *      kIOPMPowerEventTimeKey      CFDateRef, mandatory. Specifies the time when system has to wake up.
+ *      kIOPMPowerEventLeewayKey    CFNumber(kCFNumberIntType), optional. Specifies the number of seconds by which wake can be delayed
+ *                                  to coalesce with other wake requests. Defaults to 0.
+ *      kIOPMPowerEventUserVisible  CFBooleanRef, optional. Specifies if the RTC wake request will be visible to
+ *                                  user(Clock alarm, Mail Alert etc)
+ */
+IOReturn IOPMRequestSysWake(CFDictionaryRef request); 
+
 
 #pragma mark Private Assertions
 /**************************************************
@@ -411,6 +511,16 @@ enum {
 #define kIOPMAssertionTypeNeedsCPU                          CFSTR("CPUBoundAssertion")
 #define kIOPMCPUBoundAssertion                              kIOPMAssertionTypeNeedsCPU
 
+// Assertion Actions
+#define kPMASLAssertionActionCreate             "Created"
+#define kPMASLAssertionActionRetain             "Retain"
+#define kPMASLAssertionActionRelease            "Released"
+#define kPMASLAssertionActionClientDeath        "ClientDied"
+#define kPMASLAssertionActionTimeOut            "TimedOut"
+#define kPMASLAssertionActionSummary            "Summary"
+#define kPMASLAssertionActionTurnOff            "TurnedOff"
+#define kPMASLAssertionActionTurnOn             "TurnedOn"
+#define kPMASlAssertionActionCapTimeOut         "CapExpired"
 
 #pragma mark Private Assertion Dictionary Keys
 /*
@@ -535,8 +645,26 @@ enum {
  */
 #define kIOPMAssertionOnBehalfOfPIDReason                   CFSTR("AssertionOnBehalfOfPIDReason")
 
+/*!
+ * @constant kIOPMAssertionOnBehalfOfBundleID
+ * @abstract CFStringRef type. If present, specifies the Bundle ID on whose behalf the assertion is created.
+ *           This optional property can be set only at the time assertion creation and shouldn't be
+ *           changed after assertion is created.
+ */
+#define kIOPMAssertionOnBehalfOfBundleID                    CFSTR("AssertionOnBehalfOfBundleID")
 
 
+/*!
+ * @constant kIOPMAssertionTrueTypeKey
+ * @abstract Shows the current supported assertion name for the deprecated name
+ */
+#define kIOPMAssertionTrueTypeKey               CFSTR("AssertionTrueType")
+
+/*!
+ * @constant kIOPMAssertionIdKey
+ * @abstract Holds the assertionId returned to client on creation
+ */
+#define kIOPMAssertionIdKey                     CFSTR("AssertionId")
 
 /*!
  * @constant        kIOPMAssertionTimedOutNotifyString
@@ -691,7 +819,14 @@ IOReturn IOPMSetAssertionActivityLog(bool enable);
 IOReturn IOPMCopyAssertionActivityLog(CFArrayRef *assertionLog, bool *overflow);
 
 /*
- *!  @function  IOPMCopyAssertionActivityUpdate
+ *!  @function  IOPMCopyAssertionActivityLogWithAllocator
+ *   @abstract  Internally calls IOPMCopyAssertionActivityUpdate().
+ *   @result                 Return kIOReturnSuccess on success.
+ */
+IOReturn IOPMCopyAssertionActivityLogWithAllocator(CFArrayRef *assertionLog, bool *overflow, CFAllocatorRef allocator);
+
+/*
+ *!  @function  IOPMCopyAssertionActivityUpdate / IOPMCopyAssertionActivityUpdateWithAllocator
  *   @abstract  Returns all assertions related activity since last time this function is called.
  *              If this is called for first time, all available activity is returned. Depending on the 
  *              frequency of assertion activity and any resets to the activity log, some of the activity 
@@ -717,6 +852,8 @@ IOReturn IOPMCopyAssertionActivityLog(CFArrayRef *assertionLog, bool *overflow);
  *                                                        on whose behalf this assertion is created
  *                  kIOPMAssertionOnBehalfOfPIDReason   : CFStringRef, If available, description on why assertion 
  *                                                        is created on behalf of PID
+ *                  kIOPMAssertionOnBehalfOfBundleID    : CFStringRef, If available, specifies the Bundle ID
+ *                                                        on whose behalf this assertion is created
  *                  kIOPMAssertionCreatorBTSymbols      : CFArray of CFStrings giving the backtrace
  *              }
  *
@@ -730,9 +867,40 @@ IOReturn IOPMCopyAssertionActivityLog(CFArrayRef *assertionLog, bool *overflow);
  *  @result                 Return kIOReturnSuccess on success.
  */
 IOReturn IOPMCopyAssertionActivityUpdate(CFArrayRef *logUpdates, bool *overflow, uint32_t *prevRefCnt);
+IOReturn IOPMCopyAssertionActivityUpdateWithAllocator(CFArrayRef *logUpdates, bool *overflow, uint32_t *prevRefCnt, CFAllocatorRef allocator);
 
+/*!
+ * @function            IOPMCopyAssertionsByProcessWithAllocator
+ *
+ * @abstract            Returns a dictionary listing all assertions, grouped by their owning process.
+ *                      Custom allocator is passed in as parameter by the client.
+ *
+ * @discussion          Notes: One process may have multiple assertions. Several processes may
+ *                      have asserted the same assertion to different levels.
+ *
+ * @param AssertionsByPID On success, this returns a dictionary of assertions per process.
+ *                      At the top level, keys to the CFDictionary are pids stored as CFNumbers (kCFNumberIntType).
+ *                      The value associated with each CFNumber pid is a CFArray of active assertions.
+ *                      Each entry in the CFArray is an assertion represented as a CFDictionary. See the keys
+ *                      kIOPMAssertionTypeKey and kIOPMAssertionLevelKey.
+ *                      Caller must CFRelease() this dictionary when done.
+ *
+ * @result              Returns kIOReturnSuccess on success.
+ */
+IOReturn IOPMCopyAssertionsByProcessWithAllocator(CFDictionaryRef *AssertionsByPID, CFAllocatorRef allocator);
 
+/*
+ *! @function   IOPMCopyAssertionsByType
+ *  @abstract   Copies all active assertions with the specified name.
+ *
+ *  @param name             Assertion name
+ *
+ *  @param assertionsArray  On Success, contains the list of assertions for the specified type
+ *
+ *  @result                 Return kIOReturnSuccess on success.
+ */
 
+IOReturn IOPMCopyAssertionsByType(CFStringRef type, CFArrayRef *assertionsArray);
 /*
  *! @function   IOPMSetAssertionActivityAggregate
  *  @abstract   Enable/disable assertion activity duration aggregates by powerd. Activity aggregation must be enabled explicitly
@@ -774,6 +942,38 @@ IOReturn IOPMSetAssertionActivityAggregate(bool enable);
  */
 CFDictionaryRef IOPMCopyAssertionActivityAggregate( );
 
+/*
+ * ! @function  IOPMCopyAssertionActivityAggregateWithAllocator
+ *   @abstract  Returns aggregate duration for which each process held the assertion with in the specified time frame with
+ *              custom allocator
+ *
+ *  @param allocator   A custom allocator reference to be used for allocation of the result CFDictionary.
+ *
+ *
+ *  @result     Returns CFDictionary on success.
+ *              The CFDictionary returned by this function is an aggregate of all processes preventing sleep
+ *              since the aggregation is enabled by calling IOPMSetAssertionActivityAggregate(). This dictionary
+ *              is in the format of Simple Array report and can be interpreted using IOReporting library APIs as
+ *              shown below:
+ *
+ *
+ *      IOReportIterate(dict, ^(IOReportChannelRef ch) {
+ *              printf(" %llu %lld %lld %lld\n", IOReportChannelGetChannelID(ch),
+ *                      IOReportArrayGetValueForIndex(ch, 1),
+ *                      IOReportArrayGetValueForIndex(ch, 2),
+ *                      IOReportArrayGetValueForIndex(ch, 3));
+ *      });
+ *
+ *      'dict' is the dictionary returned by IOPMCopyAssertionActivityAggregate(). IOReportChannelGetChannelID()
+ *      returns the PID of the process. IOReportArrayGetValueForIndex(ch, 1) returns duration in seconds for which
+ *      this process prevented Idle sleep since the first call to IOPMSetAssertionActivityAggregate().
+ *      Similarly, value at index 2 returns duration in seconds for which this process prevented demand sleep and
+ *      value at index 3 returns duration for which this process prevented display sleep.
+ *
+ *      Delta of two outputs from IOPMCopyAssertionActivityAggregate() can be obtained by calling IOReporting API
+ *      IOReportCreateSamplesDelta().
+ */
+CFDictionaryRef IOPMCopyAssertionActivityAggregateWithAllocator(CFAllocatorRef allocator);
 
 /*
  * Deprecated assertion constants
@@ -803,9 +1003,6 @@ CFDictionaryRef IOPMCopyAssertionActivityAggregate( );
 #define kIOPMDynamicStoreUserOverridesKey               "State:/IOKit/PowerManagement/UserOverrides"
 #define kIOPMDefaultPreferencesKey                      "Defaults"
 
-#define kIOPMUPSPowerKey                                "UPS Power"
-#define kIOPMBatteryPowerKey                            "Battery Power"
-#define kIOPMACPowerKey                                 "AC Power"
 
 // units - CFNumber in minutes
 #define kIOPMDisplaySleepKey                            "Display Sleep Timer"
@@ -1226,72 +1423,22 @@ CFDictionaryRef     IOPMCopyActivePowerProfiles(void);
 */
 IOReturn            IOPMSetActivePowerProfiles(CFDictionaryRef which_profile);
 
-
 /**************************************************
 *
-* Repeating Sleep/Wake/Shutdown/Restart API
+* Cancel All Scheduled Power Events
 *
 **************************************************/
-/*!
- * @functiongroup Repeating power events
- */
 
-// Keys to index into CFDictionary returned by IOPSCopyRepeatingPowerEvents()
-#define     kIOPMRepeatingPowerOnKey        "RepeatingPowerOn"
-#define     kIOPMRepeatingPowerOffKey       "RepeatingPowerOff"
+// Indexes for the actions to handle under _io_pm_schedule_power_event.
+#define     kIOPMCancelScheduledEvent        0
+#define     kIOPMScheduleEvent               1
+#define     kIOPMCancelAllScheduledEvents    2
 
-#define     kIOPMAutoSleep                  "sleep"
-#define     kIOPMAutoShutdown               "shutdown"
-
-// Keys to "days of week" bitfield for IOPMScheduleRepeatingPowerEvent()
-enum {
-    kIOPMMonday         = 1 << 0,
-    kIOPMTuesday        = 1 << 1,
-    kIOPMWednesday      = 1 << 2,
-    kIOPMThursday       = 1 << 3,
-    kIOPMFriday         = 1 << 4,
-    kIOPMSaturday       = 1 << 5,
-    kIOPMSunday         = 1 << 6
-};
-
-// Keys to index into sub-dictionaries of the dictionary returned by IOPSCopyRepeatingPowerEvents
-// Absolute time to schedule power on (stored as a CFNumberRef, type = kCFNumberIntType)
-//#define kIOPMPowerOnTimeKey                 "time"
-// Bitmask of days to schedule a wakeup for (CFNumberRef, type = kCFNumberIntType)
-#define kIOPMDaysOfWeekKey                  "weekdays"
-// Type of power on event (CFStringRef)
-//#define kIOPMTypeOfPowerOnKey               "typeofwake"
-
-/*  @function IOPMScheduleRepeatingPowerEvent
- *  @abstract Schedules a repeating sleep, wake, shutdown, or restart
- *  @discussion Private API to only be used by Energy Saver preferences panel. Note that repeating sleep & wakeup events are valid together, 
- *              and shutdown & power on events are valid together, but you cannot mix sleep & power on, or shutdown & wakeup events.
- *              Every time you call IOPMSchedueRepeatingPowerEvent, we will cancel all previously scheduled repeating events of that type, and any
- *              scheduled repeating events of "incompatible" types, as I just described.
- *  @param  events A CFDictionary containing two CFDictionaries at keys "RepeatingPowerOn" and "RepeatingPowerOff".
-                Each of those dictionaries contains keys for the type of sleep, the days_of_week, and the time_of_day. These arguments specify the
-                time, days, and type of power events.
- *  @result kIOReturnSuccess on success, kIOReturnError or kIOReturnNotPrivileged otherwise.
- */
-IOReturn IOPMScheduleRepeatingPowerEvent(CFDictionaryRef events);
-
-/*  @function IOPMCopyRepeatingPowerEvents
- *  @abstract Gets the system
- *  @discussion Private API to only be used by Energy Saver preferences panel. Copies the system's current repeating power on
-                and power off events.
-                The returned CFDictionary contains two CFDictionaries at keys "RepeatingPowerOn" and "RepeatingPowerOff".
-                Each of those dictionaries contains keys for the type of sleep, the days_of_week, and the time_of_day.
- *  @result NULL on failure, CFDictionary (possibly empty) otherwise.
- */
- CFDictionaryRef IOPMCopyRepeatingPowerEvents(void);
-
-/*  @function IOPMScheduleRepeatingPowerEvent
- *  @abstract Cancels all repeating power events
+/*  @function IOPMCancellAllScheduledPowerEvent
+ *  @abstract Cancels all scheduled power events
  *  @result kIOReturnSuccess on success, kIOReturnError or kIOReturnNotPrivileged otherwise.
  */ 
-IOReturn IOPMCancelAllRepeatingPowerEvents(void);
-
-
+IOReturn IOPMCancelAllScheduledPowerEvents(void);
 
 /**************************************************
 *
@@ -1802,6 +1949,29 @@ void IOPMClaimSystemWakeEvent(
         CFDictionaryRef     description);
 
 /*****************************************************************************/
+
+/*
+ *! @function   IOPMSetActivePushConnectionState
+ *  @abstract   Specify if Active push connections exists on the system.
+ *
+ *  @param  exists      Set to 'true' when there are active push connections on the system.
+ *
+ *  @result             Return kIOReturnSuccess on success.
+ */
+IOReturn IOPMSetActivePushConnectionState(bool exists);
+
+/*
+ *! @function   IOPMGetActivePushConnectionState
+ *  @abstract   Returns the current state of active push connections
+ *
+ *  @param  exists      Returns 'true' if there are active push connections on the system.
+ *
+ *  @result             Return kIOReturnSuccess. All other return values indicate a failure
+ *                      in getting the current state; value of 'exists' parameter is not
+ *                      valid in that case.
+ */
+IOReturn IOPMGetActivePushConnectionState(bool *exists);
+
 /*****************************************************************************/
 
 /*! @group IOPMCapabilityBits
@@ -1982,7 +2152,8 @@ typedef uint32_t IOPMSystemPowerStateCapabilities;
 #define kIOPMSystemPowerStateCapabilityAudio            kIOPMCapabilityAudio
 #define kIOPMSystemPowerStateCapabilityNetwork          kIOPMCapabilityNetwork
 #define kIOPMSystemPowerStateCapabilityDisk             kIOPMCapabilityDisk
-#define kIOPMSytemPowerStateCapabilitiesMask            kIOPMCapabilityBitsMask
+#define kIOPMSystemPowerStateCapabilitiesMask           kIOPMCapabilityBitsMask
+#define kIOPMSytemPowerStateCapabilitiesMask            kIOPMSystemPowerStateCapabilitiesMask
 
 /*! IOPMEventHandlerType
  *  IOPMEventHandlerType is the generic function type to handle a
@@ -2166,6 +2337,25 @@ typedef void (*IOPMEventHandlerType)(
 #define kIOPMAcknowledgeOptionSleepServiceCapTimeout            CFSTR("SleepServiceTimeout")
 #define kIOPMAckSleepServiceCapTimeout                          kIOPMAcknowledgeOptionSleepServiceCapTimeout
 
+/*!
+ * @constant kIOPMAckDHCPRenewWakeDate
+ *
+ *  This string can be used as a key in the 'options' dictionary
+ *  argument to IOPMConnectionAcknowledgeEventWithOptions.
+ *
+ * Only mDNSResponder should pass this argument. Behavior if passed from any other process
+ * is undefined.
+ *
+ *  Passing this "Date" option lets a caller request a maintenance wake
+ *  from the system at a later date. If possible, the system will wake
+ *  and perform maintenance activity at the specified time.
+ *
+ *  This acknowledgement option is only valid when the system is transitioning into a
+ *  sleep state i.e. entering a state with 0 capabilities.
+ *
+ */
+#define kIOPMAckDHCPRenewWakeDate                               CFSTR("DHCPRenew")
+
 /*
  * @constant kIOPMAckClientInfo
  *
@@ -2179,6 +2369,34 @@ typedef void (*IOPMEventHandlerType)(
  * the name of the calling process.
  */
 #define kIOPMAckClientInfoKey                                   CFSTR("ClientInfo")
+
+/*
+ * @constant kIOPMAckClientInfoBGTask
+ *
+ * Optional key for IOPMConnectionAcknoweledgeEventWithOptions() dictionary.
+ *
+ * The caller may set this key to a CFString with a reason or cause for this 
+ * DarkWake when kIOPMAckBackgroundTaskWakeDate is set in the dictionary.
+ *
+ * The string should be a reason, process name, pid, or strings that's useful 
+ * for debugging. The value will be logged into "pmset -g log" along with
+ * the name of the calling process.
+ */
+#define kIOPMAckClientInfoBGTaskKey                             CFSTR("ClientInfoBGTask")
+
+/*
+ * @constant kIOPMAckClientInfoAppRefresh
+ *
+ * Optional key for IOPMConnectionAcknoweledgeEventWithOptions() dictionary.
+ *
+ * The caller may set this key to a CFString with a reason or cause for this 
+ * DarkWake when kIOPMAckClientInfoAppRefresh is set in the dictionary.
+ *
+ * The string should be a reason, process name, pid, or strings that's useful 
+ * for debugging. The value will be logged into "pmset -g log" along with
+ * the name of the calling process.
+ */
+#define kIOPMAckClientInfoAppRefreshKey                         CFSTR("ClientInfoAppRefresh")
 
 /*****************************************************************************/
 /*****************************************************************************/
@@ -2605,7 +2823,37 @@ CFStringRef IOPMCopyUserActivityLevelDescription(uint64_t userActive);
                         __OSX_AVAILABLE_STARTING(__MAC_10_9, __IPHONE_NA);
 
 
-/*! 
+/*!
+ * kIOPMIdleSleepPreventersNotifyName
+ *
+ * Notification name used for BSD notifications. A notification is posted on this name
+ * whenever the number of kexts preventing idle sleep changes. This count is saved
+ * as the state of this notification.
+ */
+#define kIOPMIdleSleepPreventersNotifyName  "com.apple.powermanagement.idlesleeppreventers"
+
+/*!
+ * kIOPMSystemSleepPreventersNotifyName
+ *
+ * Notification name used for BSD notifications. A notification is posted on this name
+ * whenever the number of kexts preventing system sleep changes. This count is saved
+ * as the state of this notification.
+ */
+#define kIOPMSystemSleepPreventersNotifyName  "com.apple.powermanagement.systemsleeppreventers"
+
+/*!
+ * IOPMCopySleepPreventersList
+ *
+ * Returns an array of kext names that are preventing idle sleep/system sleep
+ */
+enum
+{
+    kIOPMIdleSleepPreventers    = 0,
+    kIOPMSystemSleepPreventers  = 1
+};
+IOReturn  IOPMCopySleepPreventersList(int preventerType, CFArrayRef *outArray);
+
+/*!
  * kIOPMSleepServiceActiveNotifyName
  *
  * This API is optional; use <code>IOPMGetSleepServicesActive()</code> for thee easiest way
@@ -2615,7 +2863,7 @@ CFStringRef IOPMCopyUserActivityLevelDescription(uint64_t userActive);
  */
 #define kIOPMSleepServiceActiveNotifyName   "com.apple.powermanagement.sleepservices"
 
-/*! 
+/*!
  * kIOPMSleepServiceActiveNotifyBit
  * When set, this bit indicates the system is handling SleepServices work.
  *
@@ -2668,31 +2916,24 @@ enum {
     kIOPMDarkWakeThermalEventCount,
     kIOPMTCPKeepAliveExpirationOverride,
     kIOPMTCPKeepAliveIsActive,
-    kIOPMTCPWakeQuota,
-    kIOPMTCPWakeQuotaInterval,
     kIOPMSetAssertionActivityLog,
     kIOPMSetAssertionActivityAggregate,
     kIOPMSetReservePowerMode,
+    kIOPMWakeOnLanIsActive,
+    kIOPMPushConnectionActive,
 };
 
 /*!
  * @function        IOPMGetValueInt
- * @abstract        For IOKit use only.
+ * @abstract        For IOKit internal use only.
  */
 int IOPMGetValueInt(int selector);
 
 /*!
  * @function        IOPMSetValueInt
- * @abstract        For IOKit use only.
+ * @abstract        For IOKit internal use only.
  */
-void IOPMSetValueInt(int selector, int value);
-
-
-
-#define kIOPMDebugAssertionASLLog           0x01
-#define kIOPMDebugLogAssertionSynchronous   0x02
-#define kIOPMDebugLogCallbacks              0x04
-#define kIOPMDebugAppTimeoutStackshot       0x08
+IOReturn IOPMSetValueInt(int selector, int value);
 
 IOReturn IOPMSetDebugFlags(uint32_t newFlags, uint32_t *oldFlags);
 IOReturn IOPMSetBTWakeInterval(uint32_t newInterval, uint32_t *oldInterval);
@@ -2702,6 +2943,30 @@ IOReturn IOPMSetDWLingerInterval(uint32_t newInterval, uint32_t *oldInterval);
 #define kIOPMDisableAssertionType 0x1
 #define kIOPMEnableAssertionType 0x2
 IOReturn IOPMCtlAssertionType(char *type, int op);
+
+/*!
+ * @constant    kIOPMPerformanceWarningNotificationKey
+ * @abstract    Notify(3) string that PM fires every time there is performance warning change
+ */
+
+#define kIOPMPerformanceWarningNotificationKey      "com.apple.system.power.performance_warning"
+
+/*!
+ * @function    IOPMGetPerformanceWarningLevel
+ * @abstract    Get performance warning level of the system.
+ * @result      An integer pointer declaring the performance warning level of the system.
+ *              The value of the integer is one of (defined in IOPMPrivate.h):
+ *              <ul>
+ *                  <li>kIOPMPerformanceNormal
+ *                  <li>kIOPMPerformanceWarning
+ *              </ul>
+ *              Upon success the performance level value will be found at the
+ *              pointer argument
+ * @result      kIOReturnSuccess, or other error report. Returns kIOReturnNotFound if
+ *              performance warning level has not been published.
+ */
+
+IOReturn IOPMGetPerformanceWarningLevel(uint32_t *perfLevel);
 
 
 /*! @group IOReporting power SPI
