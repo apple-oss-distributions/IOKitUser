@@ -26,6 +26,9 @@
 
 #include "IOSystemConfiguration.h"
 #include <CoreFoundation/CoreFoundation.h>
+#if !TARGET_OS_IPHONE
+#include <IOKit/platform/IOPlatformSupportPrivate.h>
+#endif
 #include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/pwr_mgt/IOPMPrivate.h>
 #include <IOKit/ps/IOPowerSources.h>
@@ -59,13 +62,10 @@ typedef struct {
     uint32_t    defaultValueBattery;
     uint32_t    defaultValueUPS;
 } PMSettingDescriptorStruct;
-#ifndef kIOPMAutoPowerOffEnabledKey
-#define kIOPMAutoPowerOffEnabledKey "poweroffenabled"
-#define kIOPMAutoPowerOffDelayKey "poweroffdelay"
-#endif
+
 PMSettingDescriptorStruct defaultSettings[] =
 {   /* Setting Name                                 AC - Battery - UPS */
-    {kIOPMAutoPowerOffDelayKey,                         0,   0,  0},
+    {kIOPMAutoPowerOffDelayKey,                     28800,   0,  0},
     {kIOPMAutoPowerOffEnabledKey,                       0,   0,  0},
     {kIOPMDarkWakeBackgroundTaskKey,                    1,   0,  0},
     {kIOPMDeepSleepEnabledKey,                          0,   0,  0},
@@ -88,7 +88,8 @@ PMSettingDescriptorStruct defaultSettings[] =
     {kIOPMWakeOnACChangeKey,                            0,   0,  0},
     {kIOPMWakeOnClamshellKey,                           1,   1,  1},
     {kIOPMWakeOnLANKey,                                 1,   0,  0},
-    {kIOPMWakeOnRingKey,                                1,   0,  0}
+    {kIOPMWakeOnRingKey,                                1,   0,  0},
+    {kIOPMTCPKeepAlivePrefKey,                          1,   1,  1},
 };
 
 static const int kPMSettingsCount = sizeof(defaultSettings)/sizeof(PMSettingDescriptorStruct);
@@ -936,6 +937,15 @@ bool IOPMFeatureIsAvailable(CFStringRef PMFeature, CFStringRef power_source)
         {
             return_this_value = 1;
         }
+    }
+    else if (CFEqual(PMFeature, CFSTR(kIOPMTCPKeepAlivePrefKey)))
+    {
+        CFTypeRef tcpka = kCFBooleanFalse;
+        IOPlatformCopyFeatureDefault(kIOPlatformTCPKeepAliveDuringSleep, &tcpka);
+        if (tcpka == kCFBooleanTrue)
+            return_this_value = 1;
+        else
+            return_this_value = 0;
 #endif
     }
     else
@@ -1327,7 +1337,16 @@ void IOPMRemoveIrrelevantProperties(CFMutableDictionaryRef energyPrefs)
                    {
                        CFDictionaryRemoveValue(this_profile, (CFStringRef)dict_keys[dict_count]);
                    }
-#endif /* !TARGET_OS_IPHONE */
+                }
+                else if (CFEqual((CFStringRef)dict_keys[dict_count], CFSTR(kIOPMTCPKeepAlivePrefKey)))
+                {
+                    CFTypeRef tcpka = kCFBooleanFalse;
+                    IOPlatformCopyFeatureDefault(kIOPlatformTCPKeepAliveDuringSleep, &tcpka);
+                    if (tcpka == kCFBooleanFalse) {
+                        CFDictionaryRemoveValue(this_profile,
+                                                (CFStringRef)dict_keys[dict_count]);
+                    }
+#endif /* TARGET_OS_OSX */
                 }
                 else if( !IOPMFeatureIsAvailableWithSupportedTable((CFStringRef)dict_keys[dict_count],
                                     (CFStringRef)profile_keys[profile_count], _supportedCached) )
@@ -1368,42 +1387,8 @@ exit:
 
 IOReturn IOPMActivateSystemPowerSettings( void )
 {
-    io_registry_entry_t         rootdomain = MACH_PORT_NULL;
-    CFDictionaryRef             settings = NULL;
-    IOReturn                    ret = kIOReturnSuccess;
-    bool                        disable_sleep = false;
 
-    settings = IOPMCopySystemPowerSettings();
-    if(!settings) {
-        goto exit;
-    }
-
-    // Disable Sleep?
-    disable_sleep = (kCFBooleanTrue ==
-                        CFDictionaryGetValue( settings, kIOPMSleepDisabledKey ));
-
-    rootdomain = getPMRootDomainRef();
-#if !TARGET_OS_IPHONE
-    IORegistryEntrySetCFProperty( rootdomain, kIOPMSleepDisabledKey,
-                        (disable_sleep ? kCFBooleanTrue : kCFBooleanFalse));
-#else
-    ret = IORegistryEntrySetCFProperty( rootdomain, kIOPMSleepDisabledKey,
-                                       (disable_sleep ? kCFBooleanTrue : kCFBooleanFalse));
-#endif
-
-#if !TARGET_OS_IPHONE
-    bool    avoid_keyStore = false;
-    // Disable FDE Key Store on SMC
-    avoid_keyStore = (kCFBooleanTrue ==
-                        CFDictionaryGetValue( settings, CFSTR(kIOPMDestroyFVKeyOnStandbyKey) ));
-    ret = IORegistryEntrySetCFProperty( rootdomain, CFSTR(kIOPMDestroyFVKeyOnStandbyKey),
-                        (avoid_keyStore ? kCFBooleanTrue : kCFBooleanFalse));
-
-#endif
-
-exit:
-    if(settings) CFRelease( settings );
-    return ret;
+    return kIOReturnUnsupported;
 }
 
 CFDictionaryRef IOPMCopySystemPowerSettings(void)
@@ -1435,11 +1420,7 @@ IOReturn IOPMSetSystemPowerSetting(CFStringRef key, CFTypeRef value)
     if ((getuid() != 0) && (geteuid() != 0)) {
         return kIOReturnNotPrivileged;
     }
-    if (!CFEqual(key, CFSTR(kIOPMDestroyFVKeyOnStandbyKey)) &&
-            !CFEqual(key, kIOPMSleepDisabledKey)) {
-        rc = kIOReturnBadArgument;
-        goto exit;
-    }
+
     settings = IOPMCopySystemPowerSettings();
     if (!settings) {
         mutableSettings = CFDictionaryCreateMutable(0, 0,
@@ -1477,6 +1458,9 @@ exit:
     if (mutableSettings) {
         CFRelease(mutableSettings);
     }
+#else
+    (void)key;
+    (void)value;
 #endif
     return rc;
 }
@@ -1558,6 +1542,7 @@ static CFDictionaryRef getSystemProvidedPreferences(void)
     CFDictionaryRef         defaultPrefs    = NULL;
     io_registry_entry_t     regEntry        = MACH_PORT_NULL;
     bool                    overrides       = false;
+    bool                    overrideCopied  = false;
 
     regEntry = getPMRootDomainRef();
     if (regEntry == MACH_PORT_NULL) {
@@ -1584,6 +1569,7 @@ static CFDictionaryRef getSystemProvidedPreferences(void)
             acOverride = CFDictionaryCreateCopy(0,overridePrefs);
             battOverride = CFDictionaryCreateCopy(0,overridePrefs);
             upsOverride = CFDictionaryCreateCopy(0,overridePrefs);
+            overrideCopied = true;
         } else if (!acOverride || !battOverride || !upsOverride) {
             goto exit;
         }
@@ -1640,6 +1626,17 @@ exit:
     if (battDict)      CFRelease(battDict);
     if (upsDict)       CFRelease(upsDict);
     if (defaultPrefs)  CFRelease(defaultPrefs);
+    if (overrideCopied) {
+        if (acOverride) {
+            CFRelease(acOverride);
+        }
+        if (battOverride) {
+            CFRelease(battOverride);
+        }
+        if (upsOverride) {
+            CFRelease(upsOverride);
+        }
+    }
 
     return systemPrefs;
 }

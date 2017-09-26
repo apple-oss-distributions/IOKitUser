@@ -95,6 +95,11 @@ enum {
  */
 #define kIOPMReservePwrCtrlEntitlement      CFSTR("com.apple.private.iokit.reservepower-control")
 
+/*! @define     kIOPMWakeRequestEntitlement
+ *  @abstract   Apple internal entitlement to allow non-root processes to schedules wakes.
+*/
+#define kIOPMWakeRequestEntitlement      CFSTR("com.apple.iokit.wakerequest")
+
 
 /*!
  * @constant    kIOPMServerBootstrapName
@@ -1376,6 +1381,14 @@ void IOPMUnregisterExceptionNotification(IOPMNotificationHandle handle);
 #define kIOPMSleepServicesKey                           "SleepServices"
 // units - CFNumber 0/1
 #define kIOPMUnifiedSleepSliderPrefKey                  "UnifiedSleepSliderPref"
+// units - CFNumber 0/1
+#define kIOPMTCPKeepAlivePrefKey                        "TCPKeepAlivePref"
+
+
+#define kIOPMUpdateDarkWakeBGSettingKey                 "Update DarkWakeBG Setting"
+#define kIOPMDarkWakeLingerDurationKey                  "DarkWake Linger Duration"
+#define kIOPMAdaptiveDisplaySleepKey                    "Adaptive Display Sleep"
+#define kIOPMAdaptiveStandbySleepKey                    "Adaptive Standby Sleep"
 
 // Restart on Kernel panic
 // Deprecated in 10.8. Do not use.
@@ -1705,8 +1718,7 @@ IOReturn IOPMSetSystemPowerSetting( CFStringRef key, CFTypeRef value );
 
     /*!
 @function IOPMActivateSystemPowerSettings
-@abstract Re-send system power settings to kernel.
-@result   kIOReturnSuccess on success; IOReturn error otherwise
+@abstract This is not supported.
      */
 IOReturn IOPMActivateSystemPowerSettings( void );
 
@@ -3319,7 +3331,7 @@ IOReturn IOPMSetValueInt(int selector, int value);
 
 IOReturn IOPMSetDebugFlags(uint32_t newFlags, uint32_t *oldFlags);
 IOReturn IOPMSetBTWakeInterval(uint32_t newInterval, uint32_t *oldInterval);
-IOReturn IOPMSetDWLingerInterval(uint32_t newInterval, uint32_t *oldInterval);
+IOReturn IOPMSetDWLingerInterval(uint32_t newInterval);
 
 /* ops for IOPMCtlAssertionType() */
 #define kIOPMDisableAssertionType 0x1
