@@ -95,6 +95,18 @@ enum {
  */
 #define kIOPMReservePwrCtrlEntitlement      CFSTR("com.apple.private.iokit.reservepower-control")
 
+/*! @define     kIOPMAssertOnBatteryEntitlement
+ *  @abstract   Apple internal entitlement for processes that creates assertion with
+ *              kIOPMAssertionAppliesToLimitedPowerKey property set to true.
+ */
+#define kIOPMAssertOnBatteryEntitlement     CFSTR("com.apple.private.iokit.assertonbattery")
+
+/*! @define     kIOPMAssertOnLidCloseEntitlement
+ *  @abstract   Apple internal entitlement for processes that creates assertion with
+ *              kIOPMAssertionAppliesOnLidClose property set to true.
+ */
+#define kIOPMAssertOnLidCloseEntitlement    CFSTR("com.apple.private.iokit.assertonlidclose")
+
 /*! @define     kIOPMWakeRequestEntitlement
  *  @abstract   Apple internal entitlement to allow non-root processes to schedules wakes.
 */
@@ -603,6 +615,9 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
  *                  This property is valid only for assertion <code>@link kIOPMAssertionTypePreventSystemSleep @/link</code>. 
  *                  By default, this assertion is applied only when system is running on unlimited
  *                  power source. This behavior can be changed using this property.
+ *
+ *                  Process creating assertion with this property must have kIOPMAssertOnBatteryEntitlement
+ *                  entitlement.
  */
 
 #define kIOPMAssertionAppliesToLimitedPowerKey              CFSTR("AppliesToLimitedPower")
@@ -621,6 +636,9 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
  *                  By default, this assertion is applied only when lid is open and setting this assertion property
  *                  changes that default behavior. This assertion property has no meaning on systems with no lid 
  *                  and it is treated as no-op.
+ *
+ *                  Process creating assertion with this property must have kIOPMAssertOnLidCloseEntitlement
+ *                  entitlement.
  */
 
 #define kIOPMAssertionAppliesOnLidClose                     CFSTR("AppliesOnLidClose")
@@ -644,6 +662,21 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
  */
 
 #define kIOPMAssertionAutoTimesout                          CFSTR("AutoTimesout")
+
+/*!
+ * @define          kIOPMAssertionExitSilentRunning
+ *
+ * @abstract        The CFDictionary key in assertion info dictionary to trigger exiting silent running mode
+ *
+ * @discussion      The value for this key will be a CFBooleanRef, with value <code>kCFBooleanTrue</code> or
+ *                  <code>kCFBooleanFalse</code>. A value of kCFBooleanTrue triggers system to exit silent
+ *                  running mode. Set the property to kCFBooleanFalse has no impact on system state.
+ *
+ *                  This optional property can be set to kCFBooleanTrue at the time of assertion creation or
+ *                  can be set later using <code>@link IOPMAssertionSetProperty @/link</code>. This property
+ *                  is not honored on all assertion types.
+ */
+#define kIOPMAssertionExitSilentRunning                     CFSTR("ExitSilentRunning")
 
 /*!
  * @define          kIOPMAssertionResourcesUsed
@@ -861,8 +894,13 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
  */
 #define kIOPMLastWakeTimeSMCDataString                      "com.apple.powermanagement.lastwaketimesmcdata"
 
-
-
+/*!
+ * @constant        kIOPMAssertForUserProximityString
+ * @discussion      Assertion notify(3) string
+ *                  Notification posted when assertion is created/released for user proximity.
+ *                  State is set to 1 when sleep is prevented for user proximity. Otherwise, it is set to 0.
+ */
+#define kIOPMAssertForUserProximityString                   "com.apple.system.powermanagement.assertuserproximity"
 
 
 /*! 
@@ -1320,7 +1358,6 @@ void IOPMUnregisterExceptionNotification(IOPMNotificationHandle handle);
 /*
  * Deprecated assertion constants
  */
-#if TARGET_OS_IPHONE
     // RY: Look's like some embedded clients are still dependent on the following
     #define kIOPMPreventIdleSleepAssertion              kIOPMAssertionTypeNoIdleSleep
     #define kIOPMEnableIdleSleepAssertion               kIOPMAssertionTypeEnableIdleSleep
@@ -1330,7 +1367,6 @@ void IOPMUnregisterExceptionNotification(IOPMNotificationHandle handle);
         kIOPMAssertionIDInvalid                         = kIOPMNullAssertionID
      };
     #define kIOPMAssertionValueKey                      kIOPMAssertionLevelKey
-#endif /* TARGET_OS_IPHONE */
 
 /**************************************************
 *
@@ -1383,7 +1419,8 @@ void IOPMUnregisterExceptionNotification(IOPMNotificationHandle handle);
 #define kIOPMUnifiedSleepSliderPrefKey                  "UnifiedSleepSliderPref"
 // units - CFNumber 0/1
 #define kIOPMTCPKeepAlivePrefKey                        "TCPKeepAlivePref"
-
+// units - CFNumber 0/1
+#define kIOPMProximityDarkWakeKey                       "ProximityDarkWake"
 
 #define kIOPMUpdateDarkWakeBGSettingKey                 "Update DarkWakeBG Setting"
 #define kIOPMDarkWakeLingerDurationKey                  "DarkWake Linger Duration"
@@ -2954,10 +2991,11 @@ typedef enum {
  *                              Upon that system wakeup, the policy mechanism will try its
  *                              best to remain awake in a usable state until
  *                              <code>@link IOPMAssertionRelease@/link</code> gets called on the
- *                              AssertionID. In this case, client need to wait for the message
- *                              kIOMessageSystemHasPoweredOn before proceeding with the work that need to be
- *                              done with assertion. See documentation for IORegisterForSystemPower for details
- *                              about message kIOMessageSystemHasPoweredOn.
+ *                              AssertionID. In this case, client has to wait until it receives
+ *                              kIOMessageSystemWillNotSleep message or kIOMessageSystemHasPoweredOn message
+ *                              before proceeding with the work that needs to be done with assertion.
+ *                              See documentation for IORegisterForSystemPower for details
+ *                              about messages kIOMessageSystemHasPoweredOn and kIOMessageSystemWillNotSleep.
  *                              If the sleep transition is a force sleep, IOKit will not attempt to 
  *                              immediately re-awaken the system. 
  *

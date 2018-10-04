@@ -47,9 +47,9 @@
 /********************************************************************/
 #endif
 /*
- * We use "/System/Library/Extensions" and "/Library/Extensions" - 11860417
+ * We use "/System/Library/Extensions", "/Library/Extensions", and /AppleInternal/Library/Extensions - 11860417
  */
-#define _kOSKextNumSystemExtensionsFolders (2)
+#define _kOSKextNumSystemExtensionsFolders (3)
 
 #define _kOSKextSystemLibraryExtensionsFolder           \
             "/System/Library/Extensions"
@@ -180,6 +180,13 @@ void _OSKextSetStrictAuthentication(Boolean flag);
  */
 typedef Boolean (*OSKextAuthFnPtr)(OSKextRef, void *);
 void _OSKextSetAuthenticationFunction(OSKextAuthFnPtr authFn, void *context);
+
+/* Used to allow clients to audit kext loads. After the client registers
+ * their callback function, calls to OSKextLoad() will result in a call to this
+ * function, provided that the kext has passed all error checking.
+ */
+typedef Boolean (*OSKextLoadAuditFnPtr)(OSKextRef);
+void _OSKextSetLoadAuditFunction(OSKextLoadAuditFnPtr authFn);
 
 /* The basic filesystem authentication checks historically performed
  * by the OSKext API, exposed for use by custom authentication methods.

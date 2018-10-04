@@ -63,9 +63,12 @@
 #include <zlib.h>
 #include <sys/file.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <uuid/uuid.h>
 #include <libgen.h>
+#include <sandbox/rootless.h>
+#include <sys/csr.h>
 
 #include "OSKext.h"
 #include "OSKextPrivate.h"
@@ -279,7 +282,10 @@ typedef struct __OSKext {
         unsigned int      isLoadableInSafeBoot:1;
 
        /* Set as determined or on demand. */
-        unsigned int      validated:1;  // all possible checks done
+        unsigned int      sip_protected:1; // protected by installer:
+                                           // don't flush authentication bits
+
+        unsigned int      validated:1;     // all possible checks done
         unsigned int      invalid:1;       // at least 1 failure, or fully validated
         unsigned int      valid:1;         // all possible checks done & passed
 
@@ -387,7 +393,9 @@ static Boolean                __sOSKextSimulatedSafeBoot           = FALSE;
 static Boolean                __sOSKextUsesCaches                  = TRUE;
 static Boolean                __sOSKextStrictRecordingByLastOpened = FALSE;
 static Boolean                __sOSKextStrictAuthentication        = FALSE;
+static Boolean                __sOSKextIsSIPDisabled               = FALSE;
 static OSKextAuthFnPtr        __sOSKextAuthenticationFunction      = _OSKextBasicFilesystemAuthentication;
+static OSKextLoadAuditFnPtr   __sOSKextLoadAuditFunction           = NULL;
 static void                 * __sOSKextAuthenticationContext       = NULL;
 
 static CFArrayRef             __sOSKextPackageTypeValues       = NULL;
@@ -1484,14 +1492,19 @@ static void __OSKextInitialize(void)
     CFAllocatorRef     nonrefcountAllocator = NULL;  // must release
 
     // must release each
-    CFURLRef  extensionsDirs[_kOSKextNumSystemExtensionsFolders] = { 0, 0 };
+    CFURLRef  extensionsDirs[_kOSKextNumSystemExtensionsFolders] = {0};
 
+    struct stat sb;
     int    numValues;
 
    /* Prevent deadlock when calling other functions that might think they
     * need to initialize.
     */
     __sOSKextInitializing = true;
+
+    if (csr_check(CSR_ALLOW_UNTRUSTED_KEXTS) == 0) {
+        __sOSKextIsSIPDisabled = TRUE;
+    }
 
     __kOSKextTypeID = _CFRuntimeRegisterClass(&__OSKextClass);
 
@@ -1504,7 +1517,9 @@ static void __OSKextInitialize(void)
         OSKextLogMemError();
         goto finish;
     }
-    
+
+    numValues = _kOSKextNumSystemExtensionsFolders;
+
     extensionsDirs[0] = CFURLCreateFromFileSystemRepresentation(
                 nonrefcountAllocator,
                 (const UInt8 *)_kOSKextSystemLibraryExtensionsFolder,
@@ -1516,16 +1531,38 @@ static void __OSKextInitialize(void)
                 (const UInt8 *)_kOSKextLibraryExtensionsFolder,
                 strlen(_kOSKextLibraryExtensionsFolder),
                 /* isDir */ true);
-    
+
+    /* /AppleInternal/Library/Extensions may not exist.  Avoid adding
+     * it in that case, to avoid confusing the various tools that consume
+     * this array and expect all kext repos to exist.  We generally assume
+     * that this won't be created post-boot.  In the unlikely case that it
+     * is, any tools/daemons that consume OSKextLib will need to be reloaded
+     * to catch the new directory.
+     */
+    if (stat(_kOSKextAppleInternalLibraryExtensionsFolder, &sb) == 0) {
+        extensionsDirs[2] = CFURLCreateFromFileSystemRepresentation(
+                    nonrefcountAllocator,
+                    (const UInt8 *)_kOSKextAppleInternalLibraryExtensionsFolder,
+                    strlen(_kOSKextAppleInternalLibraryExtensionsFolder),
+                    /* isDir */ true);
+    } else {
+        --numValues;
+    }
+
+    for (int i = 0; i < numValues; ++i) {
+        if (extensionsDirs[i] == NULL) {
+            OSKextLogMemError();
+            goto finish;
+        }
+    }
+
     __sOSKextSystemExtensionsFolderURLs = CFArrayCreate(
                     nonrefcountAllocator,
                     (const void **)extensionsDirs,
-                    _kOSKextNumSystemExtensionsFolders,
+                    numValues,
                     &kCFTypeArrayCallBacks);
-    
-    if (!extensionsDirs[0] ||
-        !extensionsDirs[1] ||
-        !__sOSKextSystemExtensionsFolderURLs) {
+
+    if (!__sOSKextSystemExtensionsFolderURLs) {
         OSKextLogMemError();
         goto finish;
     }
@@ -2286,6 +2323,15 @@ void _OSKextSetAuthenticationFunction(OSKextAuthFnPtr authFn, void *context)
     return;
 }
 
+/*********************************************************************
+ * An interface to set the load audit function, used by OSKextLoad
+ * in the current context for monitoring kext load information.
+ *********************************************************************/
+void _OSKextSetLoadAuditFunction(OSKextLoadAuditFnPtr authFn)
+{
+    __sOSKextLoadAuditFunction = authFn;
+    return;
+}
 
 #pragma mark Instance Management
 /*********************************************************************
@@ -4546,6 +4592,7 @@ finish:
 void __OSKextRemoveIdentifierCacheForKext(OSKextRef aKext)
 {
     char         scratchPath[PATH_MAX];
+    char         repoPath[PATH_MAX];
     const char * delRoot = NULL;   // do not free
 
    /* We can't do it if we aren't root.
@@ -4562,25 +4609,20 @@ void __OSKextRemoveIdentifierCacheForKext(OSKextRef aKext)
 
    /* I'm sick of CF verbosity so we're going to do this C style.
     */
-    if (!strncmp(scratchPath,
-        _kOSKextSystemLibraryExtensionsFolder,
-        strlen(_kOSKextSystemLibraryExtensionsFolder))) {
-        
-        delRoot = _kOSKextSystemLibraryExtensionsFolder;
 
-    } else if (!strncmp(scratchPath,
-        _kOSKextLibraryExtensionsFolder,
-        strlen(_kOSKextLibraryExtensionsFolder))){
+    CFIndex count = CFArrayGetCount(__sOSKextSystemExtensionsFolderURLs);
+    for (CFIndex i = 0; i < count; i++) {
+        CFURLRef directoryURL = CFArrayGetValueAtIndex(
+            __sOSKextSystemExtensionsFolderURLs, i);
 
-        delRoot = _kOSKextSystemLibraryExtensionsFolder;
+        CFURLGetFileSystemRepresentation(directoryURL, true, (UInt8 *)repoPath, PATH_MAX);
 
-    } else if (!strncmp(scratchPath,
-        _kOSKextAppleInternalLibraryExtensionsFolder,
-        strlen(_kOSKextAppleInternalLibraryExtensionsFolder))){
-
-        delRoot = _kOSKextSystemLibraryExtensionsFolder;
+        if (!strncmp(scratchPath, repoPath, PATH_MAX)) {
+            delRoot = repoPath;
+            break;
+        }
     }
-    
+
     if (!delRoot) {
         goto finish;
     }
@@ -5691,17 +5733,20 @@ void OSKextFlushInfoDictionary(OSKextRef aKext)
         if (!OSKextIsFromMkext(aKext)) {
             SAFE_RELEASE_NULL(aKext->infoDictionary);
 
-           /* The info dict could change by the time we read it again,
-            * so clear all validation/authentication flags. Leave
-            * diagnostics in place (a bit funky I suppose).
-            */
-            aKext->flags.valid = 0;
-            aKext->flags.invalid = 0;
-            aKext->flags.validated = 0;
-            aKext->flags.authentic = 0;
-            aKext->flags.inauthentic = 0;
-            aKext->flags.authenticated = 0;
-            aKext->flags.isSigned = 0;
+            // Flush cached auth bits for non-Apple kexts only
+            if (!aKext->flags.sip_protected) {
+               /* The info dict could change by the time we read it again,
+                * so clear all validation/authentication flags. Leave
+                * diagnostics in place (a bit funky I suppose).
+                */
+                aKext->flags.valid = 0;
+                aKext->flags.invalid = 0;
+                aKext->flags.validated = 0;
+                aKext->flags.authentic = 0;
+                aKext->flags.inauthentic = 0;
+                aKext->flags.authenticated = 0;
+                aKext->flags.isSigned = 0;
+            }
         }
 
     } else if (__sOSKextsByURL) {
@@ -6318,6 +6363,15 @@ static void __OSKextPersonalityBundleIdentifierApplierFunction(
     char                 * bundleIDCString     = NULL;  // must free
     char                 * personalityCString  = NULL;  // must free
 
+    // Make sure that each personality is a dict of dicts
+    if (CFGetTypeID(personality) != CFDictionaryGetTypeID()) {
+        OSKextLog(/* kext */ NULL,
+            kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
+            "Kext personality %s subentry is not a dictionary",
+            CFStringGetCStringPtr(personalityName, kCFStringEncodingUTF8));
+        goto finish;
+    }
+
     bundleID = OSKextGetIdentifier(aKext);
     if (!bundleID) {
         goto finish; // xxx - not much we can do, maybe log an error?
@@ -6393,7 +6447,16 @@ CFArrayRef OSKextCopyPersonalitiesArray(OSKextRef aKext)
 
     personalities = OSKextGetValueForInfoDictionaryKey(aKext,
         CFSTR(kIOKitPersonalitiesKey));
-    if (!personalities || !CFDictionaryGetCount(personalities)) {
+
+    if (!personalities) {
+        goto finish;
+    } else if (CFGetTypeID(personalities) != CFDictionaryGetTypeID()) {
+        OSKextLog(/* kext */ NULL,
+            kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
+            "Kext personality for kext %s is not a dictionary",
+            CFStringGetCStringPtr(CFURLGetString(aKext->bundleURL), kCFStringEncodingUTF8));
+        goto finish;
+    } else if (!CFDictionaryGetCount(personalities)) {
         goto finish;
     }
 
@@ -6436,9 +6499,23 @@ CFArrayRef OSKextCopyPersonalitiesOfKexts(CFArrayRef kextArray)
 
         kextPersonalities = OSKextGetValueForInfoDictionaryKey(thisKext,
             CFSTR(kIOKitPersonalitiesKey));
-        if (!kextPersonalities || !CFDictionaryGetCount(kextPersonalities)) {
+
+        // This is gross, but we can't safely get the type of the pointer without
+        // checking first if it's NULL, and we can't get the count of the elements
+        // unless we're sure it's a dictionary (and if it isn't, we should probably
+        // log it.)
+        if (!kextPersonalities) {
+            continue;
+        } else if (CFGetTypeID(kextPersonalities) != CFDictionaryGetTypeID()) {
+            OSKextLog(/* kext */ NULL,
+                kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
+                "Kext personality for kext %s is not a dictionary",
+                CFStringGetCStringPtr(CFURLGetString(thisKext->bundleURL), kCFStringEncodingUTF8));
+            continue;
+        } else if (!CFDictionaryGetCount(kextPersonalities)) {
             continue;
         }
+
         context.kext = thisKext;
         CFDictionaryApplyFunction(kextPersonalities,
             __OSKextPersonalityBundleIdentifierApplierFunction,
@@ -9675,6 +9752,18 @@ OSReturn __OSKextLoadWithArgsDict(
     requestBuffer = CFDataGetBytePtr(mkext);
     requestLength = CFDataGetLength(mkext);
 
+    if (!__sOSKextLoadAuditFunction) {
+        OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
+             "No load audit function set, cannot load %s", kextPath);
+        goto finish;
+    }
+
+    if (!__sOSKextLoadAuditFunction(aKext)) {
+        OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
+             "Load audit function returned false, bailing on load of %s", kextPath);
+        goto finish;
+    }
+
     OSKextLog(aKext, kOSKextLogProgressLevel | kOSKextLogLoadFlag,
          "Loading %s.", kextPath);
 
@@ -11751,17 +11840,20 @@ void OSKextFlushLoadInfo(
             }
             SAFE_FREE_NULL(aKext->loadInfo);
 
-           /* The executable could change by the time we read it again,
-            * so clear all validation/authentication flags. Leave
-            * diagnostics in place (a bit funky I suppose).
-            */
-            aKext->flags.valid = 0;
-            aKext->flags.invalid = 0;
-            aKext->flags.validated = 0;
-            aKext->flags.authentic = 0;
-            aKext->flags.inauthentic = 0;
-            aKext->flags.authenticated = 0;
-            aKext->flags.isSigned = 0;
+            // Flush cached auth bits for non-Apple kexts only
+            if (!aKext->flags.sip_protected) {
+               /* The executable could change by the time we read it again,
+                * so clear all validation/authentication flags. Leave
+                * diagnostics in place (a bit funky I suppose).
+                */
+                aKext->flags.valid = 0;
+                aKext->flags.invalid = 0;
+                aKext->flags.validated = 0;
+                aKext->flags.authentic = 0;
+                aKext->flags.inauthentic = 0;
+                aKext->flags.authenticated = 0;
+                aKext->flags.isSigned = 0;
+            }
        }
     } else if (__sOSKextsByURL) {
         flushingAll = true;
@@ -13245,12 +13337,26 @@ finish:
 Boolean OSKextAuthenticate(OSKextRef aKext)
 {
     Boolean     result        = true;
+    char        kextPath[PATH_MAX];
 
     aKext->flags.inauthentic = 0;
     aKext->flags.authentic = 0;
     aKext->flags.authenticated = 0;
+    aKext->flags.sip_protected = 0;
 
     if (__sOSKextAuthenticationFunction) {
+        if (!__OSKextGetFileSystemPath(aKext, NULL, true, kextPath)) {
+            OSKextLog(aKext,
+                kOSKextLogErrorLevel |
+                kOSKextLogGeneralFlag | kOSKextLogKextBookkeepingFlag,
+                "Could not get absolute path of kext!");
+            result = false;
+            goto finish;
+        }
+        if (!__sOSKextIsSIPDisabled && rootless_check_trusted(kextPath) == 0) {
+            aKext->flags.sip_protected = 1;
+        }
+
         result = __sOSKextAuthenticationFunction(aKext, __sOSKextAuthenticationContext);
     } else {
         // Setting a NULL authentication function means its not authenticated.
@@ -13260,6 +13366,7 @@ Boolean OSKextAuthenticate(OSKextRef aKext)
         result = false;
     }
 
+finish:
    /*****
     * Update to denote authentication has happened, and place its result in
     * the appropriate bit.
@@ -13703,6 +13810,10 @@ void __OSKextAddDiagnostic(
     CFStringRef            valueToSet     = NULL;  // do not release
 
     if (!(type & __sOSKextRecordsDiagnositcs)) {
+        goto finish;
+    }
+
+    if (!value) {
         goto finish;
     }
 
