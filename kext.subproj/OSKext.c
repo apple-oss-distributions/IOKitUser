@@ -68,7 +68,6 @@
 #include <uuid/uuid.h>
 #include <libgen.h>
 #include <sandbox/rootless.h>
-#include <sys/csr.h>
 
 #include "OSKext.h"
 #include "OSKextPrivate.h"
@@ -138,6 +137,11 @@
 #endif
 
 #define MAX_SEGNAME_LEN                   16
+#define MAX_SUFFIX_LEN                    128
+
+#ifndef kOSKextVariantOverrideKey
+#define kOSKextVariantOverrideKey               "OSKextVariantOverride"
+#endif
 
 #pragma mark Notes
 /*********************************************************************
@@ -275,14 +279,15 @@ typedef struct __OSKext {
        /* Set by __OSKextProcessInfoDictionary() */
         unsigned int      isKernelComponent:1;
         unsigned int      isInterface:1;
-        unsigned int      declaresExecutable:1;
+        unsigned int      declaresKernelExecutable:1;
+        unsigned int      declaresUserExecutable:1;
         unsigned int      loggingEnabled:1;
         unsigned int      plistHasEnableLoggingSet:1;
         unsigned int      plistHasIOKitDebugFlags:1;
         unsigned int      isLoadableInSafeBoot:1;
 
        /* Set as determined or on demand. */
-        unsigned int      sip_protected:1; // protected by installer:
+        unsigned int      rootless_trusted:1; // protected by installer:
                                            // don't flush authentication bits
 
         unsigned int      validated:1;     // all possible checks done
@@ -305,8 +310,20 @@ typedef struct __OSKext {
 * Internal Constants and Enums
 *********************************************************************/
 
-#define __sOSKextFullBundleExtension     ".kext/"
-#define __kDSStoreFilename               CFSTR(".DS_Store")
+/* IOKitUser_host target builds against last release's xnu... :/ */
+#ifndef kOSBundleRequiredDriverKit
+#define kOSBundleRequiredDriverKit "DriverKit"
+#endif
+
+#ifndef kCFBundleIdentifierKernelKey
+#define kCFBundleIdentifierKernelKey "CFBundleIdentifierKernel"
+#endif
+
+#define __sOSKextBundleExtension            ".kext/"
+#define __sOSKextDriverKitBundleExtension   ".dext/"
+#define __kOSKextBundlePackageTypeKext      CFSTR("KEXT")
+#define __kOSKextBundlePackageTypeDriverKit CFSTR("DEXT")
+#define __kDSStoreFilename                  CFSTR(".DS_Store")
 
 #define __kOSKextKernelIdentifier        CFSTR("__kernel__")
 #define __kOSKextUnknownIdentifier       "__unknown__"
@@ -318,6 +335,7 @@ typedef struct __OSKext {
 #define __kOSKextCompatibilityBundleID   "com.apple.kernel.6.0"
 #define __kOSKextPrivateKPI              CFSTR("com.apple.kpi.private")
 #define __kOSKextKasanKPI                CFSTR("com.apple.kpi.kasan")
+#define __kOSKextKasanKPIVersion         CFSTR("8.0.0b1")
 
 /* Used when generating symbols.
  */
@@ -344,7 +362,7 @@ typedef struct __OSKext {
 #define __kOSKextIdentifierCacheBasePathKey    "OSKextIdentifierCacheBasePath"
 #define __kOSKextIdentifierCacheKextInfoKey    "OSKextIdentifierCacheKextInfo"
 #define __kOSKextIdentifierCacheVersionKey     "OSKextIdentifierCacheVersion"
-#define __kOSKextIdentifierCacheCurrentVersion (1)
+#define __kOSKextIdentifierCacheCurrentVersion (2)
 
 #ifndef kKextRequestPredicateGetLoadedByUUID
 #define kKextRequestPredicateGetLoadedByUUID       "Get Loaded Kext Info By UUID"
@@ -369,9 +387,9 @@ __unused static const int g_max_align_to_4k = 0;
  *
  * Values are NOT retained.
  */
-static CFMutableArrayRef      __sOSAllKexts                = NULL;
-static CFMutableDictionaryRef __sOSKextsByURL              = NULL;
-static CFMutableDictionaryRef __sOSKextsByIdentifier       = NULL;
+static CFMutableArrayRef      __sOSAllKexts                 = NULL;
+static CFMutableDictionaryRef __sOSKextsByURL               = NULL;
+static CFMutableDictionaryRef __sOSKextsByIdentifier        = NULL;
 
 /* The default log flags result in errors and the special explicit
  * messages going out, and that's about it.
@@ -388,15 +406,16 @@ static const NXArchInfo       __sOSKextUnknownArchInfo         = {
     .byteorder   = NX_UnknownByteOrder,
     .description = "unknown CPU architecture",
 };
-static const NXArchInfo     * __sOSKextArchInfo                    = &__sOSKextUnknownArchInfo;
-static Boolean                __sOSKextSimulatedSafeBoot           = FALSE;
-static Boolean                __sOSKextUsesCaches                  = TRUE;
-static Boolean                __sOSKextStrictRecordingByLastOpened = FALSE;
-static Boolean                __sOSKextStrictAuthentication        = FALSE;
-static Boolean                __sOSKextIsSIPDisabled               = FALSE;
-static OSKextAuthFnPtr        __sOSKextAuthenticationFunction      = _OSKextBasicFilesystemAuthentication;
-static OSKextLoadAuditFnPtr   __sOSKextLoadAuditFunction           = NULL;
-static void                 * __sOSKextAuthenticationContext       = NULL;
+static const NXArchInfo              * __sOSKextArchInfo                    = &__sOSKextUnknownArchInfo;
+static CFStringRef                     __sOSKextTargetString                = NULL;
+static Boolean                         __sOSKextSimulatedSafeBoot           = FALSE;
+static Boolean                         __sOSKextUsesCaches                  = TRUE;
+static Boolean                         __sOSKextStrictRecordingByLastOpened = FALSE;
+static Boolean                         __sOSKextStrictAuthentication        = FALSE;
+static OSKextAuthFnPtr                 __sOSKextAuthenticationFunction      = _OSKextBasicFilesystemAuthentication;
+static OSKextLoadAuditFnPtr            __sOSKextLoadAuditFunction           = NULL;
+static OSKextPersonalityPatcherFnPtr   __sOSKextPersonalityPatcherFunction  = NULL;
+static void                          * __sOSKextAuthenticationContext       = NULL;
 
 static CFArrayRef             __sOSKextPackageTypeValues       = NULL;
 static CFArrayRef             __sOSKextOSBundleRequiredValues  = NULL;
@@ -407,7 +426,7 @@ static OSKextDiagnosticsFlags __sOSKextRecordsDiagnositcs      = kOSKextDiagnost
 
 static OSKextVersion          __sOSNewKmodInfoKernelVersion = -1;
 
-static char sOSKextExecutableSuffix[128];
+char OSKextExecutableVariant[MAX_SUFFIX_LEN];
 
 __unused static uint64_t nSplitKexts = 0, nNonSplitKexts = 0;
 
@@ -447,6 +466,7 @@ static const char * safe_mach_error_string(mach_error_t error_code);
 static CFArrayRef        __sOSKextSystemExtensionsFolderURLs = NULL;
 static CFArrayRef        __sOSKextInfoEssentialKeys          = NULL;
 // xxx - This set is all except OSBundleExecutablePath, OSBundleMachOHeaders, and OSBundleClasses.
+static CFArrayRef        __sOSKextInfoKextOnlyKeys           = NULL;
 
 const char * kOSKextLoadNotification   = "com.apple.kext.load";
 const char * kOSKextUnloadNotification = "com.apple.kext.unload";
@@ -504,6 +524,9 @@ const CFStringRef kOSKextDiagnosticSharedExecutableAndExecutableKey =
                   CFSTR("Kext declares both CFBundleExecutable and "
                   "CFBundleSharedExecutableIdentifier; use only one.");
 #endif /* SHARED_EXECUTABLE */
+const CFStringRef kOSKextDiagnosticUserExecutableAndExecutableKey =
+                  CFSTR("CFBundlePackageType is DEXT and bundle declares "
+                  "CFBundleExecutable; use only one.");
 const CFStringRef kOSKextDiagnosticCompatibleVersionLaterThanVersionKey =
                   CFSTR("Compatible version must be lower than current version.");
 const CFStringRef kOSKextDiagnosticExecutableBadKey =
@@ -630,6 +653,21 @@ const CFStringRef kOSKextDiagnosticIneligibleInSafeBoot =
                   CFSTR("Kext isn't loadable during safe boot.");
 const CFStringRef kOSKextDependencyIneligibleInSafeBoot =
                   CFSTR("Dependencies aren't loadable during safe boot");
+const CFStringRef kOSKextDiagnosticOSBundleRequiredValueIneligibleForDriverKit =
+                  CFSTR("Driver Extension lacks appropriate value for OSBundleRequired, "
+                        "and will not be launched without kextd present. Use one of "
+                        "'DriverKit' or 'Safe Boot.'");
+const CFStringRef kOSKextDiagnosticThirdPartiesIneligibleForDriverKitOSBundleRequired =
+                  CFSTR("Third-party Driver Extensions are ineligible to run in Safe Boot, or "
+                        "match on devices during early boot. Please remove the OSBundleRequired "
+                        "key from your Info.plist.");
+const CFStringRef kOSKextDiagnosticKextIneligibleForDriverKit =
+                  CFSTR("Kexts may not use the DriverKit value for OSBundleRequired.");
+const CFStringRef kOSKextDiagnosticInfoKeyIneligibleForDriverKit =
+                  CFSTR("Driver Extensions may not use the %@ key; please remove.");
+const CFStringRef kOSKextDiagnosticMissingDesignatedKernelClass =
+                  CFSTR("The 'CFBundleIdentifierKernel' key is required in your personality to "
+                        "specify the base kext to load when your kext is instantiated.");
 
 #pragma mark General Private Function Declarations
 /*********************************************************************
@@ -1460,17 +1498,22 @@ static char * segIdxToName(enum enumSegIdx idx) {
 *********************************************************************/
 static void __OSKextInitialize(void)
 {
-    CFTypeRef packageTypeValues[] = { CFSTR("KEXT") };
+    CFTypeRef packageTypeValues[] = {
+        __kOSKextBundlePackageTypeKext,
+        __kOSKextBundlePackageTypeDriverKit,
+    };
     CFTypeRef bundleRequiredValues[] = {
         CFSTR(kOSBundleRequiredRoot),
         CFSTR(kOSBundleRequiredLocalRoot),
         CFSTR(kOSBundleRequiredNetworkRoot),
         CFSTR(kOSBundleRequiredSafeBoot),
         CFSTR(kOSBundleRequiredConsole),
+        CFSTR(kOSBundleRequiredDriverKit),
     };
     CFTypeRef essentialInfoKeys[] = {
         kCFBundleIdentifierKey,
         kCFBundleVersionKey,
+        _kCFBundlePackageTypeKey,
         CFSTR(kOSBundleCompatibleVersionKey),
         CFSTR(kOSBundleIsInterfaceKey),
         CFSTR(kOSKernelResourceKey),
@@ -1488,6 +1531,16 @@ static void __OSKextInitialize(void)
         CFSTR(kOSBundleDependenciesKey),
         CFSTR(kOSBundleRetainCountKey)
     };
+
+    /* For kexts only, not dexts. */
+    CFTypeRef kextInfoKeys[] = {
+        CFSTR(kOSKernelResourceKey),
+        CFSTR(kAppleSecurityExtensionKey),
+        CFSTR(kAppleKernelExternalComponentKey),
+        CFSTR(kOSBundleSharedExecutableIdentifierKey),
+        CFSTR(kOSBundleIsInterfaceKey),
+    };
+
     CFAllocatorContext nonrefcountAllocatorContext;
     CFAllocatorRef     nonrefcountAllocator = NULL;  // must release
 
@@ -1495,16 +1548,12 @@ static void __OSKextInitialize(void)
     CFURLRef  extensionsDirs[_kOSKextNumSystemExtensionsFolders] = {0};
 
     struct stat sb;
-    int    numValues;
+    int    numValues = 0;
 
    /* Prevent deadlock when calling other functions that might think they
     * need to initialize.
     */
     __sOSKextInitializing = true;
-
-    if (csr_check(CSR_ALLOW_UNTRUSTED_KEXTS) == 0) {
-        __sOSKextIsSIPDisabled = TRUE;
-    }
 
     __kOSKextTypeID = _CFRuntimeRegisterClass(&__OSKextClass);
 
@@ -1518,19 +1567,45 @@ static void __OSKextInitialize(void)
         goto finish;
     }
 
-    numValues = _kOSKextNumSystemExtensionsFolders;
-
-    extensionsDirs[0] = CFURLCreateFromFileSystemRepresentation(
+    extensionsDirs[numValues++] = CFURLCreateFromFileSystemRepresentation(
                 nonrefcountAllocator,
                 (const UInt8 *)_kOSKextSystemLibraryExtensionsFolder,
                 strlen(_kOSKextSystemLibraryExtensionsFolder),
                 /* isDir */ true);
     
-    extensionsDirs[1] = CFURLCreateFromFileSystemRepresentation(
+    extensionsDirs[numValues++] = CFURLCreateFromFileSystemRepresentation(
                 nonrefcountAllocator,
                 (const UInt8 *)_kOSKextLibraryExtensionsFolder,
                 strlen(_kOSKextLibraryExtensionsFolder),
                 /* isDir */ true);
+
+    /* /System/Library/DriverExtensions may not exist on older systems.
+     * Don't add it if it doesn't exist, in case we end up doing operations
+     * on older volumes.
+     */
+    if (stat(_kOSKextSystemLibraryDriverExtensionsFolder, &sb) == 0) {
+        extensionsDirs[numValues++] = CFURLCreateFromFileSystemRepresentation(
+                    nonrefcountAllocator,
+                    (const UInt8 *)_kOSKextSystemLibraryDriverExtensionsFolder,
+                    strlen(_kOSKextSystemLibraryDriverExtensionsFolder),
+                    /* isDir */ true);
+    }
+
+    if (stat(_kOSKextLibraryDriverExtensionsFolder, &sb) == 0) {
+        extensionsDirs[numValues++] = CFURLCreateFromFileSystemRepresentation(
+                    nonrefcountAllocator,
+                    (const UInt8 *)_kOSKextLibraryDriverExtensionsFolder,
+                    strlen(_kOSKextLibraryDriverExtensionsFolder),
+                    /* isDir */ true);
+    }
+
+    if (stat(_kOSKextLibraryAppleExtensionsFolder, &sb) == 0) {
+        extensionsDirs[numValues++] = CFURLCreateFromFileSystemRepresentation(
+                    nonrefcountAllocator,
+                    (const UInt8 *)_kOSKextLibraryAppleExtensionsFolder,
+                    strlen(_kOSKextLibraryAppleExtensionsFolder),
+                    /* isDir */ true);
+    }
 
     /* /AppleInternal/Library/Extensions may not exist.  Avoid adding
      * it in that case, to avoid confusing the various tools that consume
@@ -1540,13 +1615,11 @@ static void __OSKextInitialize(void)
      * to catch the new directory.
      */
     if (stat(_kOSKextAppleInternalLibraryExtensionsFolder, &sb) == 0) {
-        extensionsDirs[2] = CFURLCreateFromFileSystemRepresentation(
+        extensionsDirs[numValues++] = CFURLCreateFromFileSystemRepresentation(
                     nonrefcountAllocator,
                     (const UInt8 *)_kOSKextAppleInternalLibraryExtensionsFolder,
                     strlen(_kOSKextAppleInternalLibraryExtensionsFolder),
                     /* isDir */ true);
-    } else {
-        --numValues;
     }
 
     for (int i = 0; i < numValues; ++i) {
@@ -1579,6 +1652,10 @@ static void __OSKextInitialize(void)
     numValues = sizeof(essentialInfoKeys) / sizeof(void *);
     __sOSKextInfoEssentialKeys = CFArrayCreate(kCFAllocatorDefault,
         essentialInfoKeys, numValues, &kCFTypeArrayCallBacks);
+
+    numValues = sizeof(kextInfoKeys) / sizeof(void *);
+    __sOSKextInfoKextOnlyKeys = CFArrayCreate(kCFAllocatorDefault,
+        kextInfoKeys, numValues, &kCFTypeArrayCallBacks);
 
    /* This module keeps track of all open kexts by both URL and bundle ID,
     * in dictionaries that do not retain/release so that we do cleanup on
@@ -2001,6 +2078,7 @@ CFURLRef OSKextGetExecutableURL(OSKextRef aKext)
     struct stat              executableStat;
     char                     kextPath[PATH_MAX];
     char                     executablePath[PATH_MAX];
+    char                     suffix[MAX_SUFFIX_LEN];
 
     if (aKext->executableURL) {
         return aKext->executableURL;
@@ -2059,14 +2137,46 @@ CFURLRef OSKextGetExecutableURL(OSKextRef aKext)
     }
 #endif
 
-    if (executableURL && sOSKextExecutableSuffix[0]) {
+    /* If there's a target specified, we search in the info dict for a target-specific
+     * kext variant override.
+     */
+    bzero(suffix, sizeof(suffix));
+    if (executableURL && __sOSKextTargetString) {
+        // Get the override dict.
+        CFDictionaryRef overrideDict = OSKextGetValueForInfoDictionaryKey(aKext, CFSTR(kOSKextVariantOverrideKey));
+
+        if (overrideDict) {
+            // See if we have a target-specific override for the current target.
+            if (CFDictionaryContainsKey(overrideDict, __sOSKextTargetString)) {
+                // If so, we use this as a suffix.
+                CFStringRef suffixStr = CFDictionaryGetValue(overrideDict, __sOSKextTargetString);
+
+                if (suffixStr) {
+                    Boolean result = CFStringGetCString(suffixStr, suffix, sizeof(suffix), kCFStringEncodingUTF8);
+                    if (!result) {
+                        // On failure, reset suffix to zero to fall back to global suffix.
+                        bzero(suffix, sizeof(suffixStr));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to global variant string.
+    if (!suffix[0]) {
+        strlcpy(suffix, OSKextExecutableVariant, MAX_SUFFIX_LEN);
+    }
+
+
+    // Assemble the executable URL.
+    if (executableURL && suffix[0]) {
         if (!__OSKextGetFileSystemPath(/* kext */ NULL,
             executableURL, /* resolveToBase */ true, executablePath)) {
             goto finish;
         }
 
         size_t len = strlen(executablePath);
-        strlcpy(executablePath + len, sOSKextExecutableSuffix, sizeof(executablePath) - len);
+        strlcpy(executablePath + len, suffix, sizeof(executablePath) - len);
         OSKextLog(aKext,
             kOSKextLogDebugLevel | kOSKextLogFileAccessFlag,
             "Statting %s for suffix.",
@@ -2097,6 +2207,21 @@ finish:
     return aKext->executableURL;
 }
 
+CFURLRef OSKextGetKernelExecutableURL(OSKextRef aKext)
+{
+    if (OSKextDeclaresUserExecutable(aKext)) {
+        return NULL;
+    }
+    return OSKextGetExecutableURL(aKext);
+}
+
+CFURLRef OSKextGetUserExecutableURL(OSKextRef aKext)
+{
+    if (!OSKextDeclaresUserExecutable(aKext)) {
+        return NULL;
+    }
+    return OSKextGetExecutableURL(aKext);
+}
 
 /*********************************************************************
 *********************************************************************/
@@ -2109,7 +2234,7 @@ void OSKextSetExecutableSuffix(const char * suffix, const char * kernelPath)
     char *       copy;
 
     if (suffix) {
-        strlcpy(sOSKextExecutableSuffix, suffix, sizeof(sOSKextExecutableSuffix));
+        strlcpy(OSKextExecutableVariant, suffix, sizeof(OSKextExecutableVariant));
     } else if (kernelPath) {
         copy = strndup(kernelPath, MAXPATHLEN);
         if (copy)
@@ -2120,15 +2245,49 @@ void OSKextSetExecutableSuffix(const char * suffix, const char * kernelPath)
                 nsuffix = strchr(suffix, '.');
                 len = nsuffix ? (nsuffix - suffix) : strlen(suffix);
                 len += 2;
-                if (len > sizeof(sOSKextExecutableSuffix)) len = sizeof(sOSKextExecutableSuffix);
-                snprintf(sOSKextExecutableSuffix, len, "_%s", suffix);
+                if (len > sizeof(OSKextExecutableVariant)) len = sizeof(OSKextExecutableVariant);
+                snprintf(OSKextExecutableVariant, len, "_%s", suffix);
             }
             free(copy);
         }
     }
     if (!suffix) {
-        sOSKextExecutableSuffix[0] = 0;
+        OSKextExecutableVariant[0] = 0;
     }
+}
+
+/*********************************************************************
+*********************************************************************/
+
+Boolean OSKextSetTargetString(const char * targetString)
+{
+    CFStringRef newTargetString = NULL;
+
+    if (__sOSKextTargetString) {
+        SAFE_RELEASE_NULL(__sOSKextTargetString);
+    }
+
+    newTargetString = CFStringCreateWithCString(kCFAllocatorDefault,
+        targetString, kCFStringEncodingUTF8);
+
+    if (!newTargetString) {
+        OSKextLog(NULL,
+                  kOSKextLogErrorLevel | kOSKextLogGeneralFlag,
+                  "%s %d - cannot allocate memory for target string",
+                  __func__, __LINE__);
+        return false;
+    }
+
+    __sOSKextTargetString = newTargetString;
+    return true;
+}
+
+/*********************************************************************
+*********************************************************************/
+
+CFStringRef OSKextGetTargetString()
+{
+    return __sOSKextTargetString;
 }
 
 /*********************************************************************
@@ -2330,6 +2489,18 @@ void _OSKextSetAuthenticationFunction(OSKextAuthFnPtr authFn, void *context)
 void _OSKextSetLoadAuditFunction(OSKextLoadAuditFnPtr authFn)
 {
     __sOSKextLoadAuditFunction = authFn;
+    return;
+}
+
+/*********************************************************************
+ * An interface to set the personality patcher function, used by
+ * OSKextCopyPersonalitiesOfKexts and OSKextCopyPersonalitiesArray
+ * in the current context for setting keys in personalities before
+ * they are returned, or sent down to the kernel.
+ *********************************************************************/
+void _OSKextSetPersonalityPatcherFunction(OSKextPersonalityPatcherFnPtr patcherFn)
+{
+    __sOSKextPersonalityPatcherFunction = patcherFn;
     return;
 }
 
@@ -2895,30 +3066,51 @@ OSKextRef OSKextCreate(
     CFAllocatorRef allocator,
     CFURLRef       anURL)
 {
-    OSKextRef   result       = NULL;
+    OSKextRef   result        = NULL;
     CFStringRef pathExtension = NULL;  // must release
-    char        relPath[PATH_MAX];
+    CFURLRef    realURL       = NULL;
+    char        absPath[PATH_MAX];
+    char        realPath[PATH_MAX];
 
     pthread_once(&__sOSKextInitialized, __OSKextInitialize);
 
     pathExtension = CFURLCopyPathExtension(anURL);
-    if (!pathExtension || !CFEqual(pathExtension, CFSTR(kOSKextBundleExtension))) {
+    if (!pathExtension || !(CFEqual(pathExtension, CFSTR(kOSKextBundleExtension)) ||
+                            CFEqual(pathExtension, CFSTR(kOSKextDriverKitBundleExtension)))) {
         goto finish;
     }
 
     if (!__OSKextGetFileSystemPath(/* kext */ NULL, /* otherURL */ anURL,
-            /* resolveToBase */ false, relPath)) {
-            
+            /* resolveToBase */ true, absPath)) {
+
         goto finish;
     }
 
-    result = OSKextGetKextWithURL(anURL);
+    if (!realpath(absPath, realPath)) {
+        OSKextLog(/* kext */ NULL,
+            kOSKextLogErrorLevel | kOSKextLogFileAccessFlag,
+            "Unable to determine realpath for %s - failing.",
+            absPath);
+        goto finish;
+    }
+
+    realURL = CFURLCreateFromFileSystemRepresentation(
+                    kCFAllocatorDefault,
+                    (uint8_t *)realPath,
+                    strlen(realPath),
+                    /* isDirectory? */ true);
+    if (!realURL) {
+        OSKextLogMemError();
+        goto finish;
+    }
+
+    result = OSKextGetKextWithURL(realURL);
     if (result) {
         OSKextLog(/* kext */ NULL,
             kOSKextLogDebugLevel |
             kOSKextLogKextBookkeepingFlag | kOSKextLogFileAccessFlag,
             "%s is already open; returning existing object.",
-            relPath);
+            absPath);
         CFRetain(result);
         goto finish;
     }
@@ -2927,19 +3119,20 @@ OSKextRef OSKextCreate(
         kOSKextLogDebugLevel |
         kOSKextLogKextBookkeepingFlag | kOSKextLogFileAccessFlag,
         "Creating %s.",
-        relPath);
+        realPath);
 
     result = __OSKextAlloc(allocator, /* context */ NULL);
     if (!result) {
         OSKextLogMemError();
         goto finish;
     }
-    if (!__OSKextInitWithURL(result, anURL)) {
+    if (!__OSKextInitWithURL(result, realURL)) {
         SAFE_RELEASE_NULL(result);
         goto finish;
     }
 
 finish:
+    SAFE_RELEASE(realURL);
     SAFE_RELEASE(pathExtension);
     return result;
 }
@@ -2967,8 +3160,8 @@ CFMutableArrayRef __OSKextCreateKextsFromURL(
    /* Check for a single kext, read it and its plugins.
     */
     pathExtension = CFURLCopyPathExtension(anURL);
-    if (pathExtension && CFEqual(pathExtension,
-        CFSTR(kOSKextBundleExtension))) {
+    if (pathExtension && (CFEqual(pathExtension, CFSTR(kOSKextBundleExtension)) ||
+                          CFEqual(pathExtension, CFSTR(kOSKextDriverKitBundleExtension)))) {
 
         result = CFArrayCreateMutable(allocator, 0, &kCFTypeArrayCallBacks);
         if (!result) {
@@ -3060,11 +3253,11 @@ CFMutableArrayRef __OSKextCreateKextsFromURL(
         SAFE_RELEASE_NULL(kexts);
 
         pathExtension = CFURLCopyPathExtension(thisURL);
-        if (pathExtension && CFEqual(pathExtension,
-            CFSTR(kOSKextBundleExtension))) {
+        if (pathExtension && (CFEqual(pathExtension, CFSTR(kOSKextBundleExtension)) ||
+                              CFEqual(pathExtension, CFSTR(kOSKextDriverKitBundleExtension)))) {
 
             char kextURLPath[PATH_MAX];
-            
+
             __OSKextGetFileSystemPath(/* kext */ NULL, thisURL,
                 /* resolveToBase */ FALSE, kextURLPath);
 
@@ -3393,14 +3586,17 @@ OSKextRef __OSKextCreateFromIdentifierCacheDict(
     CFStringRef   bundleID           = NULL;  // do not release
     CFStringRef   bundlePath         = NULL;  // do not release
     CFStringRef   bundleVersion      = NULL;  // do not release
-    CFStringRef   fullPath           = NULL;  // must release
+    CFStringRef   bundleType         = NULL;  // do not release
+    CFStringRef   fullPath           = NULL;  // must SAFE_RELEASE
+    CFBooleanRef  isAbsolute         = NULL;  // do not release
     CFURLRef      bundleURL          = NULL;  // must release
     OSKextVersion kextVersion        = -1;
     CFBooleanRef  scratchBool        = NULL;  // do not release
+    Boolean       bundleIsDext       = FALSE;
     char          kextPath[PATH_MAX];
 
     bundlePath = (CFStringRef)CFDictionaryGetValue(cacheDict,
-        CFSTR("OSBundlePath"));
+        CFSTR(kOSBundlePathKey));
     if (!bundlePath || (CFGetTypeID(bundlePath) != CFStringGetTypeID())) {
         OSKextLog(/* kext */ NULL,
             kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
@@ -3409,10 +3605,11 @@ OSKextRef __OSKextCreateFromIdentifierCacheDict(
             (int)entryIndex);
         goto finish;
     }
-    
+
    /* Reject any non-.kext path.
     */
-    if (!CFStringHasSuffix(bundlePath, CFSTR(kOSKextBundleExtension))) {
+    if (!(CFStringHasSuffix(bundlePath, CFSTR(kOSKextBundleExtension)) ||
+          CFStringHasSuffix(bundlePath, CFSTR(kOSKextDriverKitBundleExtension)))) {
         OSKextLog(/* kext */ NULL,
             kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
             "Can't create kext: path in identifier cache entry %d "
@@ -3420,21 +3617,31 @@ OSKextRef __OSKextCreateFromIdentifierCacheDict(
             (int)entryIndex);
         goto finish;
     }
-    
-    fullPath = CFStringCreateWithFormat(allocator,
-        /* options */ 0, CFSTR("%@/%@"), basePath, bundlePath);
-     if (!fullPath) {
-        OSKextLogMemError();
-        goto finish;
-     }
- 
-    bundleURL = CFURLCreateWithFileSystemPath(allocator,
-        fullPath, kCFURLPOSIXPathStyle, /* isDir */ true);
+
+    isAbsolute = (CFBooleanRef)CFDictionaryGetValue(cacheDict,
+                    CFSTR("OSBundleUsesAbsolutePath"));
+    if (!isAbsolute ||
+        (CFGetTypeID(isAbsolute) != CFBooleanGetTypeID()) ||
+        !CFBooleanGetValue(isAbsolute)) {
+
+        fullPath = CFStringCreateWithFormat(allocator,
+            /* options */ 0, CFSTR("%@/%@"), basePath, bundlePath);
+         if (!fullPath) {
+            OSKextLogMemError();
+            goto finish;
+         }
+
+        bundleURL = CFURLCreateWithFileSystemPath(allocator,
+            fullPath, kCFURLPOSIXPathStyle, /* isDir */ true);
+    } else {
+        bundleURL = CFURLCreateWithFileSystemPath(allocator,
+            bundlePath, kCFURLPOSIXPathStyle, /* isDir */ true);
+    }
     if (!bundleURL) {
         OSKextLogMemError();
         goto finish;
     }
-    
+
     __OSKextGetFileSystemPath(/* kext */ NULL, bundleURL,
         /* resolveToBase */ TRUE, kextPath);
 
@@ -3509,6 +3716,30 @@ OSKextRef __OSKextCreateFromIdentifierCacheDict(
         }
     } else {
         newKext->version = kextVersion;
+    }
+
+    bundleType = CFDictionaryGetValue(cacheDict, _kCFBundlePackageTypeKey);
+    if (!bundleType || (CFGetTypeID(bundleType) != CFStringGetTypeID())) {
+        OSKextLog(existingKext,
+            kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
+            "Can't create kext: missing or non-string bundle package type "
+            "in identifier cache entry %d.",
+            (int)entryIndex);
+        goto finish;
+    }
+    bundleIsDext = CFEqual(bundleType, __kOSKextBundlePackageTypeDriverKit);
+    if (existingKext) {
+        if (OSKextDeclaresUserExecutable(existingKext) !=
+            bundleIsDext) {
+            OSKextLog(existingKext,
+                kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
+                "Can't create kext from cache: %s is already open and "
+                "has a different CFBundlePackageType "
+                "from identifier->path cache entry %d.",
+                kextPath, (int)entryIndex);
+        }
+    } else {
+        newKext->flags.declaresUserExecutable = bundleIsDext ? 1 : 0;
     }
 
    /* Log flags are stored optionally in the cache.
@@ -3783,7 +4014,7 @@ Boolean __OSKextCheckURL(CFURLRef anURL, Boolean writeCreateFlag)
 
     if (!__OSKextGetFileSystemPath(/* kext */ NULL, anURL,
         /* resolveToBase */ TRUE, path)) {
-        
+
         goto finish;
     }
 
@@ -3794,6 +4025,23 @@ Boolean __OSKextCheckURL(CFURLRef anURL, Boolean writeCreateFlag)
         goto finish;
     }
 
+   /* If we are checking to write a file and possibly create
+    * the containing directory, but the filesystem is read-only,
+    * bail. But only bail if we know for sure it's read-only.
+    */
+    statPath = path;
+    if (writeCreateFlag) {
+        struct statfs  statfsBuffer;
+        if (0 == statfs(statPath, &statfsBuffer)) {
+            if (statfsBuffer.f_flags & MNT_RDONLY) {
+                OSKextLogCFString(/* kext */ NULL,
+                    kOSKextLogProgressLevel | kOSKextLogFileAccessFlag,
+                    CFSTR("Not saving %s - read-only filesystem."), path);
+                goto finish;
+            }
+        }
+    }
+
     slashPtr = &path[0];
     while (1) {
         if (slashPtr == path) {
@@ -3802,22 +4050,6 @@ Boolean __OSKextCheckURL(CFURLRef anURL, Boolean writeCreateFlag)
             statPath = path;
             if (slashPtr) {
                 slashPtr[0] = '\0';
-            }
-        }
-        
-       /* If we are checking to write a file and possibly create
-        * the containing directory, but the filesystem is read-only,
-        * bail. But only bail if we know for sure it's read-only.
-        */
-        if (writeCreateFlag) {
-            struct statfs  statfsBuffer;
-            if (0 == statfs(statPath, &statfsBuffer)) {
-                if (statfsBuffer.f_flags & MNT_RDONLY) {
-                    OSKextLogCFString(/* kext */ NULL,
-                        kOSKextLogProgressLevel | kOSKextLogFileAccessFlag,
-                        CFSTR("Not saving %s - read-only filesystem."), path);
-                    goto finish;
-                }
             }
         }
 
@@ -4777,6 +5009,7 @@ CFDictionaryRef __OSKextCreateIdentifierCacheDict(
     CFURLRef               absURL        = NULL;  // must release
     CFStringRef            bundlePath    = NULL;  // must release
     CFStringRef            relativePath  = NULL;  // must release
+    CFStringRef            cachedPath    = NULL;  // do not release
     CFStringRef            scratchString = NULL;  // do not release
     char                   bundlePathCString[PATH_MAX];
     char                   basePathCString[PATH_MAX];
@@ -4807,22 +5040,27 @@ CFDictionaryRef __OSKextCreateIdentifierCacheDict(
             sizeof(basePathCString), kCFStringEncodingUTF8);
             
         OSKextLog(aKext,
-            kOSKextLogErrorLevel | kOSKextLogKextBookkeepingFlag,
-            "%s not in base path %s for identifier->path cache.",
+            kOSKextLogDetailLevel | kOSKextLogKextBookkeepingFlag,
+            "%s not in base path %s for identifier->path cache - marking.",
             bundlePathCString, basePathCString);
+
+        CFDictionarySetValue(preResult, CFSTR("OSBundleUsesAbsolutePath"), kCFBooleanTrue);
+        cachedPath = bundlePath;
+    } else {
+        fullLength = CFStringGetLength(bundlePath);
+        baseLength = 1 + CFStringGetLength(basePath);  // +1 for the final slash
+        relativePath = CFStringCreateWithSubstring(CFGetAllocator(aKext),
+            bundlePath,
+            CFRangeMake(baseLength, fullLength - baseLength));
+        if (!relativePath) {
+            OSKextLogMemError();
+            goto finish;
+        }
+
+        cachedPath = relativePath;
     }
 
-    fullLength = CFStringGetLength(bundlePath);
-    baseLength = 1 + CFStringGetLength(basePath);  // +1 for the final slash
-    relativePath = CFStringCreateWithSubstring(CFGetAllocator(aKext),
-        bundlePath,
-        CFRangeMake(baseLength, fullLength - baseLength));
-    if (!relativePath) {
-        OSKextLogMemError();
-        goto finish;
-    }
-
-    CFDictionarySetValue(preResult, CFSTR("OSBundlePath"), relativePath);
+    CFDictionarySetValue(preResult, CFSTR(kOSBundlePathKey), cachedPath);
 
     scratchString = OSKextGetIdentifier(aKext);
     if (!scratchString) {
@@ -4836,6 +5074,13 @@ CFDictionaryRef __OSKextCreateIdentifierCacheDict(
         goto finish;
     }
     CFDictionarySetValue(preResult, kCFBundleVersionKey, scratchString);
+
+    scratchString = OSKextGetValueForInfoDictionaryKey(aKext,
+                        _kCFBundlePackageTypeKey);
+    if (!scratchString) {
+        goto finish;
+    }
+    CFDictionarySetValue(preResult, _kCFBundlePackageTypeKey, scratchString);
 
    /* Only save nonzero log flags, to save file space.
     */
@@ -5002,6 +5247,7 @@ OSKextRef OSKextGetKextWithURL(
     CFURLRef    canonicalURL  = NULL;  // must release
     char        relPath[PATH_MAX];
     char        absPath[PATH_MAX];
+    char        realPath[PATH_MAX];
 
     pthread_once(&__sOSKextInitialized, __OSKextInitialize);
 
@@ -5015,10 +5261,18 @@ OSKextRef OSKextGetKextWithURL(
         goto finish;
     }
 
+    if (!realpath(absPath, realPath)) {
+        OSKextLog(/* kext */ NULL,
+            kOSKextLogErrorLevel | kOSKextLogFileAccessFlag,
+            "Unable to determine realpath for %s - failing.",
+            absPath);
+        goto finish;
+    }
+
    /* Canonicalize the URL so we can use it for a dictionary lookup.
     */
     canonicalURL = CFURLCreateFromFileSystemRepresentation(CFGetAllocator(anURL),
-        (uint8_t *)absPath, strlen(absPath), /* isDir */ true);
+        (uint8_t *)realPath, strlen(realPath), /* isDir */ true);
     if (!canonicalURL) {
         OSKextLogMemError();
         goto finish;
@@ -5605,6 +5859,14 @@ CFStringRef OSKextGetIdentifier(OSKextRef aKext)
 
 /*********************************************************************
 *********************************************************************/
+bool _OSKextIdentifierHasApplePrefix(OSKextRef aKext)
+{
+    CFStringRef bundleID = OSKextGetIdentifier(aKext);
+    return CFStringHasPrefix(bundleID, __kOSKextApplePrefix);
+}
+
+/*********************************************************************
+*********************************************************************/
 #define COMPOSITE_KEY_SEPARATOR  "_"
 
 CFStringRef __OSKextCreateCompositeKey(
@@ -5733,8 +5995,10 @@ void OSKextFlushInfoDictionary(OSKextRef aKext)
         if (!OSKextIsFromMkext(aKext)) {
             SAFE_RELEASE_NULL(aKext->infoDictionary);
 
-            // Flush cached auth bits for non-Apple kexts only
-            if (!aKext->flags.sip_protected) {
+            // Flush cached auth bits for non-Apple (or invalid or inauthentic) kexts only
+            if (!aKext->flags.rootless_trusted ||
+                !aKext->flags.valid ||
+                !aKext->flags.authentic) {
                /* The info dict could change by the time we read it again,
                 * so clear all validation/authentication flags. Leave
                 * diagnostics in place (a bit funky I suppose).
@@ -5848,16 +6112,15 @@ CFDataRef OSKextCopyUUIDForArchitecture(
 
 finish:
 
-   /* Advise the system that we no longer need the mmapped executable.
-    */
-    if (executable) {
-        (void)posix_madvise((void *)CFDataGetBytePtr(executable),
-            CFDataGetLength(executable),
-            POSIX_MADV_DONTNEED);
-    }
-
     SAFE_RELEASE(executable);
     return result;
+}
+
+/*********************************************************************
+*********************************************************************/
+Boolean OSKextDeclaresUserExecutable(OSKextRef aKext)
+{
+    return aKext->flags.declaresUserExecutable ? true : false;
 }
 
 /*********************************************************************
@@ -5865,7 +6128,6 @@ finish:
 Boolean  OSKextIsKernelComponent(OSKextRef aKext)
 {
     return aKext->flags.isKernelComponent ? true : false;
-
 }
 
 /*********************************************************************
@@ -5886,7 +6148,7 @@ Boolean  OSKextIsLibrary(OSKextRef aKext)
 *********************************************************************/
 Boolean  OSKextDeclaresExecutable(OSKextRef aKext)
 {
-    return aKext->flags.declaresExecutable ? true : false;
+    return aKext->flags.declaresKernelExecutable ? true : false;
 }
 
 /*********************************************************************
@@ -5995,7 +6257,7 @@ const NXArchInfo ** OSKextCopyArchitectures(OSKextRef aKext)
 
     if (!fatIterator) {
         __OSKextGetFileSystemPath(aKext,
-        /* otherURL */ OSKextGetExecutableURL(aKext),
+        /* otherURL */ OSKextGetKernelExecutableURL(aKext),
         /* resolveToBase */ false, urlPath);
 
         OSKextLog(aKext,
@@ -6026,12 +6288,6 @@ const NXArchInfo ** OSKextCopyArchitectures(OSKextRef aKext)
     }
 
 finish:
-   /* Advise the system that we no longer need the mmapped executable.
-    */
-    if (executable) {
-        (void)posix_madvise((void *)executable, executableEnd - executable,
-            POSIX_MADV_DONTNEED);
-    }
     if (fatIterator) {
         fat_iterator_close(fatIterator);
     }
@@ -6093,14 +6349,6 @@ Boolean OSKextSupportsArchitecture(OSKextRef aKext,
     result = true;
 
 finish:
-   /* Advise the system that we no longer need the mmapped executable.
-    */
-    if (executable) {
-        (void)posix_madvise((void *)CFDataGetBytePtr(executable),
-            CFDataGetLength(executable),
-            POSIX_MADV_DONTNEED);
-    }
-
     SAFE_RELEASE(executable);
     if (fatIterator) fat_iterator_close(fatIterator);
     return result;
@@ -6115,9 +6363,10 @@ CFArrayRef OSKextCopyPlugins(OSKextRef aKext)
     CFURLRef    pluginsURL = NULL;  // must release
     CFArrayRef  pluginURLs = NULL;   // must release
 
-   /* If aKext is a plugin, don't scan, and return an empty array.
+   /* If aKext is a plugin or a DriverKit extension, don't scan,
+    * and return an empty array.
     */
-    if (OSKextIsPlugin(aKext)) {
+    if (OSKextIsPlugin(aKext) || OSKextDeclaresUserExecutable(aKext)) {
         result = CFArrayCreate(CFGetAllocator(aKext), NULL, 0,
             &kCFTypeArrayCallBacks);
         goto finish;
@@ -6187,7 +6436,7 @@ Boolean OSKextIsPlugin(OSKextRef aKext)
     if (!parentPath) {
         OSKextLogMemError();
     }
-    findRange = CFStringFind(parentPath, CFSTR(__sOSKextFullBundleExtension),
+    findRange = CFStringFind(parentPath, CFSTR(__sOSKextBundleExtension),
         /* compareOptions */ 0);
 
     aKext->staticFlags.isPlugin = (findRange.location == kCFNotFound) ? 0 : 1;
@@ -6243,7 +6492,7 @@ OSKextRef OSKextCopyContainerForPluginKext(OSKextRef aKext)
         OSKextLogMemError();
         goto finish;
     }
-    findRange = CFStringFind(parentPath, CFSTR(__sOSKextFullBundleExtension),
+    findRange = CFStringFind(parentPath, CFSTR(__sOSKextBundleExtension),
         kCFCompareBackwards);
 
     aKext->staticFlags.isPlugin = (findRange.location == kCFNotFound) ? 0 : 1;
@@ -6336,26 +6585,31 @@ finish:
     return result;
 }
 
-
 /*********************************************************************
 *********************************************************************/
 typedef struct {
-    OSKextRef         kext;
-    CFMutableArrayRef personalities;
-} __OSKextPersonalityBundleIdentifierContext;
+    OSKextRef              kext;
+    CFMutableArrayRef      personalitiesArray;
+    CFMutableDictionaryRef personalitiesDict;
+    CFArrayRef             personalityNames;
+    bool                   includeBundleIDs;
+} __OSKextPersonalityPatcherContext;
 
-static void __OSKextPersonalityBundleIdentifierApplierFunction(
+static void __OSKextPersonalityPatcherApplierFunction(
     const void * vKey,
     const void * vValue,
           void * vContext)
 {
     CFStringRef            personalityName     = (CFStringRef)vKey;
     CFMutableDictionaryRef personality         = (CFMutableDictionaryRef)vValue;
-    __OSKextPersonalityBundleIdentifierContext  * context =
-        (__OSKextPersonalityBundleIdentifierContext *)vContext;
+    __OSKextPersonalityPatcherContext  * context =
+        (__OSKextPersonalityPatcherContext *)vContext;
     OSKextRef              aKext               = context->kext;
-    CFMutableArrayRef      personalities       = context->personalities;
+    CFMutableArrayRef      personalitiesArray  = context->personalitiesArray;
+    CFMutableDictionaryRef personalitiesDict   = context->personalitiesDict;
+    CFArrayRef             personalityNames    = context->personalityNames;
     CFStringRef            bundleID            = NULL;  // do not release
+    bool                   includeBundleIDs    = context->includeBundleIDs;
 
     CFMutableDictionaryRef personalityCopy     = NULL;  // must release
     CFStringRef            personalityBundleID = NULL;  // do not release
@@ -6370,6 +6624,14 @@ static void __OSKextPersonalityBundleIdentifierApplierFunction(
             "Kext personality %s subentry is not a dictionary",
             CFStringGetCStringPtr(personalityName, kCFStringEncodingUTF8));
         goto finish;
+    }
+
+    /* If caller specifies a filter of names, ignore unwanted personalities */
+    if (personalityNames && CFGetTypeID(personalityNames) == CFArrayGetTypeID()) {
+        CFRange range = CFRangeMake(0, CFArrayGetCount(personalityNames));
+        if (!CFArrayContainsValue(personalityNames, range, personalityName)) {
+            goto finish;
+        }
     }
 
     bundleID = OSKextGetIdentifier(aKext);
@@ -6387,41 +6649,55 @@ static void __OSKextPersonalityBundleIdentifierApplierFunction(
         goto finish;
     }
 
-   /* If the personality has no bundle identifier, insert that of the
-    * containing bundle. If is has one but it's not the same as the
-    * containing bundle's, insert that as the personality publisher.
-    */
-    personalityBundleID = CFDictionaryGetValue(personality,
-        kCFBundleIdentifierKey);
-    if (!personalityBundleID) {
-        CFDictionarySetValue(personalityCopy, kCFBundleIdentifierKey, bundleID);
-    } else if (!CFEqual(bundleID, personalityBundleID)) {
-        CFDictionarySetValue(personalityCopy, CFSTR(kIOPersonalityPublisherKey),
-            bundleID);
-    }
-
-   /* Spare the effort of creating the data when not logging by checking
-    * before the OSKextLog() call.
-    */
-    if (__OSKextShouldLog(aKext, kOSKextLogDetailLevel | kOSKextLogLoadFlag)) {
-        __OSKextGetFileSystemPath(aKext, /* otherURL */ NULL,
-            /* resolveToBase */ false, kextPath);
-        bundleIDCString = createUTF8CStringForCFString(bundleID);
-        personalityCString = createUTF8CStringForCFString(personalityName);
+    if (includeBundleIDs) {
+       /* If the personality has no bundle identifier, insert that of the
+        * containing bundle. If is has one but it's not the same as the
+        * containing bundle's, insert that as the personality publisher.
+        */
+        personalityBundleID = CFDictionaryGetValue(personality,
+            kCFBundleIdentifierKey);
         if (!personalityBundleID) {
-            OSKextLog(aKext,
-                kOSKextLogDetailLevel | kOSKextLogLoadFlag,
-                "Adding CFBundleIdentifier %s to %s personality %s.",
-                bundleIDCString, kextPath, personalityCString);
+            CFDictionarySetValue(personalityCopy, kCFBundleIdentifierKey, bundleID);
         } else if (!CFEqual(bundleID, personalityBundleID)) {
-            OSKextLog(aKext,
-                kOSKextLogDetailLevel | kOSKextLogLoadFlag,
-                "Adding IOBundlePublisher %s to %s personality %s.",
-                bundleIDCString, kextPath, personalityCString);
+            CFDictionarySetValue(personalityCopy, CFSTR(kIOPersonalityPublisherKey),
+                bundleID);
         }
+
+        /* Spare the effort of creating the data when not logging by checking
+        * before the OSKextLog() call.
+        */
+        if (__OSKextShouldLog(aKext, kOSKextLogDetailLevel | kOSKextLogLoadFlag)) {
+            __OSKextGetFileSystemPath(aKext, /* otherURL */ NULL,
+                /* resolveToBase */ false, kextPath);
+            bundleIDCString = createUTF8CStringForCFString(bundleID);
+            personalityCString = createUTF8CStringForCFString(personalityName);
+            if (!personalityBundleID) {
+                OSKextLog(aKext,
+                    kOSKextLogDetailLevel | kOSKextLogLoadFlag,
+                    "Adding CFBundleIdentifier %s to %s personality %s.",
+                    bundleIDCString, kextPath, personalityCString);
+            } else if (!CFEqual(bundleID, personalityBundleID)) {
+                OSKextLog(aKext,
+                    kOSKextLogDetailLevel | kOSKextLogLoadFlag,
+                    "Adding IOBundlePublisher %s to %s personality %s.",
+                    bundleIDCString, kextPath, personalityCString);
+            }
+        }
+
     }
 
-    CFArrayAppendValue(personalities, personalityCopy);
+    /* If set, patch the personality with the function provided by the client. */
+    if (__sOSKextPersonalityPatcherFunction &&
+       !__sOSKextPersonalityPatcherFunction(aKext, personalityCopy)) {
+        goto finish;
+    }
+
+    if (personalitiesArray) {
+        CFArrayAppendValue(personalitiesArray, personalityCopy);
+    }
+    if (personalitiesDict) {
+        CFDictionarySetValue(personalitiesDict, personalityName, personalityCopy);
+    }
 
 finish:
     SAFE_FREE(bundleIDCString);
@@ -6436,7 +6712,7 @@ CFArrayRef OSKextCopyPersonalitiesArray(OSKextRef aKext)
 {
     CFMutableArrayRef        result            = NULL;
     CFDictionaryRef          personalities     = NULL; // do not release
-    __OSKextPersonalityBundleIdentifierContext context;
+    __OSKextPersonalityPatcherContext context;
 
     result = CFArrayCreateMutable(CFGetAllocator(aKext), 0,
         &kCFTypeArrayCallBacks);
@@ -6460,10 +6736,14 @@ CFArrayRef OSKextCopyPersonalitiesArray(OSKextRef aKext)
         goto finish;
     }
 
-    context.kext = aKext;
-    context.personalities = result;
+    context.kext               = aKext;
+    context.personalitiesArray = result;
+    context.personalitiesDict  = NULL; /* We want an array, not a dict */
+    context.personalityNames   = NULL; /* Don't filter names */
+    context.includeBundleIDs   = true;
+
     CFDictionaryApplyFunction(personalities,
-        __OSKextPersonalityBundleIdentifierApplierFunction,
+        __OSKextPersonalityPatcherApplierFunction,
         &context);
 
 finish:
@@ -6476,7 +6756,7 @@ CFArrayRef OSKextCopyPersonalitiesOfKexts(CFArrayRef kextArray)
 {
     CFMutableArrayRef result              = NULL;
     CFDictionaryRef   kextPersonalities   = NULL; // do not release
-    __OSKextPersonalityBundleIdentifierContext context;
+    __OSKextPersonalityPatcherContext context;
     CFIndex           count, i;
 
     if (!kextArray) {
@@ -6491,7 +6771,7 @@ CFArrayRef OSKextCopyPersonalitiesOfKexts(CFArrayRef kextArray)
         goto finish;
     }
 
-    context.personalities = result;
+    context.personalitiesArray = result;
 
     count = CFArrayGetCount(kextArray);
     for (i = 0; i < count; i++) {
@@ -6516,9 +6796,14 @@ CFArrayRef OSKextCopyPersonalitiesOfKexts(CFArrayRef kextArray)
             continue;
         }
 
-        context.kext = thisKext;
+        context.kext               = thisKext;
+        context.personalitiesArray = result;
+        context.personalitiesDict  = NULL; /* We want an array, not a dict */
+        context.personalityNames   = NULL; /* Don't filter names */
+        context.includeBundleIDs   = true;
+
         CFDictionaryApplyFunction(kextPersonalities,
-            __OSKextPersonalityBundleIdentifierApplierFunction,
+            __OSKextPersonalityPatcherApplierFunction,
             &context);
     }
 
@@ -6570,7 +6855,7 @@ CFDataRef __OSKextMapExecutable(
         goto finish;
     }
 
-    executableURL = OSKextGetExecutableURL(aKext);
+    executableURL = OSKextGetKernelExecutableURL(aKext);
 
    /* We have no way of distinguishing whether the kext has no
     * CFBundleExecutable vs. whether the call above failed, so
@@ -6786,16 +7071,6 @@ Boolean __OSKextReadExecutable(OSKextRef aKext)
     result = true;
 
 finish:
-   /* Most access to a Mach-O executable is going to be random, so advise
-    * the system about that.
-    */
-    if (aKext->loadInfo && aKext->loadInfo->executable) {
-        (void)posix_madvise(
-            (void *)CFDataGetBytePtr(aKext->loadInfo->executable),
-            CFDataGetLength(aKext->loadInfo->executable),
-            POSIX_MADV_RANDOM);
-    }
-
     return result;
 }
 
@@ -7455,7 +7730,7 @@ static Boolean __OSKextHasSuffix(OSKextRef aKext, const char *suffix)
 {
     char path[PATH_MAX];
 
-    CFURLRef executableURL = OSKextGetExecutableURL(aKext);
+    CFURLRef executableURL = OSKextGetKernelExecutableURL(aKext);
     if (!executableURL) {
         return false;
     }
@@ -7861,11 +8136,8 @@ Boolean __OSKextResolveDependencies(
     {
         CFStringRef     infoString                  = NULL;  // do not release
         CFStringRef     readableString              = NULL;  // do not release
-        Boolean         hasApplePrefix              = false;
         Boolean         infoCopyrightIsValid        = false;
         Boolean         readableCopyrightIsValid    = false;
-
-        hasApplePrefix = CFStringHasPrefix(aKext->bundleID, __kOSKextApplePrefix);
 
         infoString = (CFStringRef) OSKextGetValueForInfoDictionaryKey(aKext,
             CFSTR("CFBundleGetInfoString"));
@@ -7884,7 +8156,8 @@ Boolean __OSKextResolveDependencies(
             SAFE_FREE(readableCString);
         }
 
-        if (!hasApplePrefix || (!infoCopyrightIsValid && !readableCopyrightIsValid)) {
+        if (!_OSKextIdentifierHasApplePrefix(aKext) ||
+            (!infoCopyrightIsValid && !readableCopyrightIsValid)) {
 
             OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogDependenciesFlag,
                 "%s has an Apple prefix but no copyright.", kextPath);
@@ -7985,10 +8258,10 @@ Boolean OSKextResolveDependencies(OSKextRef aKext)
         * root kext being resolved, it's probably too expensive to do for all.
         */
         if (result) {
-            CFStringRef required                   = NULL;  // do not release
-            Boolean     checkRootOrConsoleRequired = FALSE;
-            Boolean     checkLocalRequired         = FALSE;
-            Boolean     checkNetworkRequired       = FALSE;
+            CFStringRef required                       = NULL;  // do not release
+            Boolean     checkRootOrConsoleOrDKRequired = FALSE;
+            Boolean     checkLocalRequired             = FALSE;
+            Boolean     checkNetworkRequired           = FALSE;
 
             loadList = OSKextCopyLoadList(aKext, /* needAll */ true);
             if (!loadList) {
@@ -8003,9 +8276,10 @@ Boolean OSKextResolveDependencies(OSKextRef aKext)
             required = OSKextGetValueForInfoDictionaryKey(aKext, CFSTR(kOSBundleRequiredKey));
             if (required) {
                 if (CFEqual(required, CFSTR(kOSBundleRequiredRoot)) ||
-                    CFEqual(required, CFSTR(kOSBundleRequiredConsole))) {
-                    
-                    checkRootOrConsoleRequired = TRUE;
+                    CFEqual(required, CFSTR(kOSBundleRequiredConsole)) ||
+                    CFEqual(required, CFSTR(kOSBundleRequiredDriverKit))) {
+
+                    checkRootOrConsoleOrDKRequired = TRUE;
                 } else if (CFEqual(required, CFSTR(kOSBundleRequiredLocalRoot))) {
                     checkLocalRequired = TRUE;
                 } else if (CFEqual(required, CFSTR(kOSBundleRequiredNetworkRoot))) {
@@ -8026,10 +8300,10 @@ Boolean OSKextResolveDependencies(OSKextRef aKext)
                 * Safe Boot. We can assume the kext is valid here and therefore
                 * that its OSBundleRequired is a required value.
                 */
-                if (checkRootOrConsoleRequired) {
+                if (checkRootOrConsoleOrDKRequired) {
                     if (!thisRequired ||
                         CFEqual(CFSTR(kOSBundleRequiredSafeBoot), thisRequired)) {
-                        
+
                             __OSKextAddDiagnostic(aKext,
                                 kOSKextDiagnosticsFlagWarnings,
                                 kOSKextDiagnosticsDependencyNotOSBundleRequired,
@@ -8042,8 +8316,9 @@ Boolean OSKextResolveDependencies(OSKextRef aKext)
                     if (!thisRequired ||
                         !(CFEqual(CFSTR(kOSBundleRequiredRoot), thisRequired) ||
                           CFEqual(CFSTR(kOSBundleRequiredLocalRoot), thisRequired) ||
-                          CFEqual(CFSTR(kOSBundleRequiredConsole), thisRequired))) {
-                        
+                          CFEqual(CFSTR(kOSBundleRequiredConsole), thisRequired)) ||
+                          CFEqual(CFSTR(kOSBundleRequiredDriverKit), thisRequired)) {
+
                             __OSKextAddDiagnostic(aKext,
                                 kOSKextDiagnosticsFlagWarnings,
                                 kOSKextDiagnosticsDependencyNotOSBundleRequired,
@@ -8056,8 +8331,9 @@ Boolean OSKextResolveDependencies(OSKextRef aKext)
                     if (!thisRequired ||
                         !(CFEqual(CFSTR(kOSBundleRequiredRoot), thisRequired) ||
                          CFEqual(CFSTR(kOSBundleRequiredNetworkRoot), thisRequired) ||
-                         CFEqual(CFSTR(kOSBundleRequiredConsole), thisRequired))) {
-                        
+                         CFEqual(CFSTR(kOSBundleRequiredConsole), thisRequired)) ||
+                         CFEqual(CFSTR(kOSBundleRequiredDriverKit), thisRequired)) {
+
                             __OSKextAddDiagnostic(aKext,
                                 kOSKextDiagnosticsFlagWarnings,
                                 kOSKextDiagnosticsDependencyNotOSBundleRequired,
@@ -8561,14 +8837,6 @@ Boolean __OSKextReadSymbolReferences(
     result = true;
 finish:
 
-   /* Advise the system that we no longer need the mmapped executable.
-    */
-    if (executable) {
-        (void)posix_madvise((void *)CFDataGetBytePtr(executable),
-            CFDataGetLength(executable),
-            POSIX_MADV_DONTNEED);
-    }
-
     SAFE_RELEASE(executable);
     return result;
 }
@@ -8823,11 +9091,6 @@ finish:
 
    /* Advise the system that we no longer need the mmapped executable.
     */
-    if (executable) {
-        (void)posix_madvise((void *)CFDataGetBytePtr(executable),
-            CFDataGetLength(executable),
-            POSIX_MADV_DONTNEED);
-    }
     SAFE_RELEASE(cfSymbolName);
     SAFE_RELEASE(executable);
     return result;
@@ -9617,6 +9880,13 @@ OSReturn __OSKextLoadWithArgsDict(
         goto finish;
     }
 
+    if (!__sOSKextLoadAuditFunction) {
+        OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
+             "No load audit function set, cannot load %s", kextPath);
+        result = kOSReturnError;
+        goto finish;
+    }
+
    /* First resolve dependencies without loaded kext info to build
     * a list of identifiers, so we don't read any more bundles off
     * disk than necessary when we do check loaded. If we have different
@@ -9716,7 +9986,7 @@ OSReturn __OSKextLoadWithArgsDict(
             goto finish;
         }
     }
-    
+
    /* Ok, now resolve dependencies based on kexts having their load info.
     * Hopefully it'll still work.
     */
@@ -9736,6 +10006,17 @@ OSReturn __OSKextLoadWithArgsDict(
         goto finish;
     }
 
+    /*
+     * The auditing function is called for every kext in
+     * loadList from __OSKextCreateMkext.
+     *
+     * At this point loadList includes aKext too because
+     * OSKextCopyLoadList includes it by default.
+     *
+     * If for any reason this assumption changes, an
+     * explicit call to __sOSKextLoadAuditFunction must be
+     * forced for aKext before calling __OSKextCreateMkext.
+     */
     // construct mkext w/o compression & w/o loaded kexts in it
     mkext = __OSKextCreateMkext(CFGetAllocator(aKext), loadList,
         /* volumeRootURL */ NULL,
@@ -9751,18 +10032,6 @@ OSReturn __OSKextLoadWithArgsDict(
 
     requestBuffer = CFDataGetBytePtr(mkext);
     requestLength = CFDataGetLength(mkext);
-
-    if (!__sOSKextLoadAuditFunction) {
-        OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
-             "No load audit function set, cannot load %s", kextPath);
-        goto finish;
-    }
-
-    if (!__sOSKextLoadAuditFunction(aKext)) {
-        OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
-             "Load audit function returned false, bailing on load of %s", kextPath);
-        goto finish;
-    }
 
     OSKextLog(aKext, kOSKextLogProgressLevel | kOSKextLogLoadFlag,
          "Loading %s.", kextPath);
@@ -10225,12 +10494,6 @@ static Boolean __OSKextPerformSplitLink(
         }
     }
     
-    /* Advise the system that we need all the mmapped bytes right away.
-     */
-    (void)posix_madvise((void *)CFDataGetBytePtr(kextExecutable),
-                        CFDataGetLength(kextExecutable),
-                        POSIX_MADV_WILLNEED);
-    
     linkAddressContext.kernelLoadAddress = NULL;
     linkAddressContext.kext = aKext;
 
@@ -10295,12 +10558,6 @@ static Boolean __OSKextPerformSplitLink(
 finish:
         /* Advise the system that we no longer need the mmapped executable.
          */
-        if (kextExecutable) {
-            (void)posix_madvise((void *)CFDataGetBytePtr(kextExecutable),
-                                CFDataGetLength(kextExecutable),
-                                POSIX_MADV_DONTNEED);
-        }
-
         SAFE_RELEASE(kextExecutable);
         SAFE_RELEASE(dependencies);
         SAFE_RELEASE(indirectDependencies);
@@ -10452,12 +10709,6 @@ static Boolean __OSKextPerformLink(
     
     relocBytesPtr = &relocBytes;
     
-    /* Advise the system that we need all the mmapped bytes right away.
-     */
-    (void)posix_madvise((void *)CFDataGetBytePtr(kextExecutable),
-                        CFDataGetLength(kextExecutable),
-                        POSIX_MADV_WILLNEED);
-    
     linkAddressContext.kernelLoadAddress = kernelLoadAddress;
     linkAddressContext.kext = aKext;
     
@@ -10553,14 +10804,6 @@ static Boolean __OSKextPerformLink(
         result = true;
         
     finish:
-        
-        /* Advise the system that we no longer need the mmapped executable.
-         */
-        if (kextExecutable) {
-            (void)posix_madvise((void *)CFDataGetBytePtr(kextExecutable),
-                                CFDataGetLength(kextExecutable),
-                                POSIX_MADV_DONTNEED);
-        }
         
         SAFE_RELEASE(kextExecutable);
         SAFE_RELEASE(dependencies);
@@ -11147,7 +11390,7 @@ OSReturn OSKextSendKextPersonalitiesToKernel(
     CFMutableArrayRef mutablePersonalities = NULL;  // do not release; alias
     char              kextPath[PATH_MAX];
     char            * nameCString          = NULL;  // must free
-    CFIndex           count, i;
+    CFIndex           count;
 
     __OSKextGetFileSystemPath(aKext, /* otherURL */ NULL,
         /* resolveToBase */ false, kextPath);
@@ -11168,22 +11411,33 @@ OSReturn OSKextSendKextPersonalitiesToKernel(
                 kextPath);
         }
     } else {
+        __OSKextPersonalityPatcherContext context;
+
         CFDictionaryRef allPersonalities = OSKextGetValueForInfoDictionaryKey(
             aKext, CFSTR(kIOKitPersonalitiesKey));
-
         if (!allPersonalities && !CFDictionaryGetCount(allPersonalities)) {
             OSKextLog(aKext, kOSKextLogStepLevel | kOSKextLogLoadFlag,
                 "%s has no personalities to send to kernel.",
                 kextPath);
             goto finish;
         }
+
+        /* Make sure all named personalities match one in the kext */
+        for (CFIndex i = 0; i < CFArrayGetCount(personalityNames); i++) {
+            CFStringRef name = CFArrayGetValueAtIndex(personalityNames, i);
+            if (!CFDictionaryContainsKey(allPersonalities, name)) {
+                OSKextLogCFString(aKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
+                    CFSTR("Personality %@ not found in %s."), name, kextPath);
+                goto finish;
+            }
+        }
+
         mutablePersonalities = CFArrayCreateMutable(CFGetAllocator(aKext),
-            0, &kCFTypeArrayCallBacks);
+                        CFArrayGetCount(personalityNames), &kCFTypeArrayCallBacks);
         if (!mutablePersonalities) {
             OSKextLogMemError();
             goto finish;
         }
-        personalities = mutablePersonalities;
 
         OSKextLog(aKext,
             kOSKextLogDetailLevel |
@@ -11191,32 +11445,16 @@ OSReturn OSKextSendKextPersonalitiesToKernel(
             "Sending named personalities of %s to the kernel:",
             kextPath);
 
-        for (i = 0; i < count; i++) {
-            CFStringRef     name = CFArrayGetValueAtIndex(personalityNames, i);
-            CFDictionaryRef personality = CFDictionaryGetValue(allPersonalities,
-                name);
+        context.kext               = aKext;
+        context.personalitiesArray = result;
+        context.personalitiesDict  = NULL; /* We want an array, not a dict */
+        context.personalityNames   = personalityNames;
+        context.includeBundleIDs   = false;
 
-            SAFE_FREE_NULL(nameCString);
-            nameCString = createUTF8CStringForCFString(name);
-            if (!nameCString) {
-                OSKextLogMemError();
-                goto finish;
-            }
-
-            if (!personality) {
-                OSKextLog(aKext,
-                    kOSKextLogErrorLevel | kOSKextLogGeneralFlag,
-                    "Personality %s not found in %s.",
-                    nameCString, kextPath);
-                result = kOSKextReturnInvalidArgument;
-                goto finish;
-            }
-
-            OSKextLog(aKext,
-                kOSKextLogDetailLevel | kOSKextLogLoadFlag | kOSKextLogIPCFlag,
-                "    %s", nameCString);
-            CFArrayAppendValue(mutablePersonalities, personality);
-        }
+        CFDictionaryApplyFunction(allPersonalities,
+            __OSKextPersonalityPatcherApplierFunction,
+            &context);
+        personalities = context.personalitiesArray;
     }
 
     if (personalities && CFArrayGetCount(personalities)) {
@@ -11840,8 +12078,10 @@ void OSKextFlushLoadInfo(
             }
             SAFE_FREE_NULL(aKext->loadInfo);
 
-            // Flush cached auth bits for non-Apple kexts only
-            if (!aKext->flags.sip_protected) {
+            // Flush cached auth bits for non-Apple (or invalid or inauthentic) kexts only
+            if (!aKext->flags.rootless_trusted ||
+                !aKext->flags.valid ||
+                !aKext->flags.authentic) {
                /* The executable could change by the time we read it again,
                 * so clear all validation/authentication flags. Leave
                 * diagnostics in place (a bit funky I suppose).
@@ -12615,6 +12855,31 @@ static void __OSKextValidateIOKitPersonalityApplierFunction(
     CFArrayRemoveValueAtIndex(context->propPath,
         CFArrayGetCount(context->propPath) - 1);
 
+
+    if (OSKextDeclaresUserExecutable(context->kext)) {
+        propKey = CFSTR(kCFBundleIdentifierKernelKey);
+        CFArrayAppendValue(context->propPath, propKey);
+
+        checkResult = __OSKextCheckProperty(context->kext,
+            personality,
+            /* propKey */ propKey,
+            /* diagnosticValue */ context->propPath,
+            /* expectedType */ CFStringGetTypeID(),
+            /* legalValues */ NULL,
+            /* required */ true,
+            /* typeRequired */ true,
+            /* nonnilRequired */ true,
+            /* valueOut */ (CFTypeRef *)&stringValue,
+            &valueIsNonnil);
+        if (!checkResult) {
+            __OSKextSetDiagnostic(context->kext, kOSKextDiagnosticsFlagValidation,
+                    kOSKextDiagnosticMissingDesignatedKernelClass);
+        }
+
+        CFArrayRemoveValueAtIndex(context->propPath,
+            CFArrayGetCount(context->propPath) - 1);
+    }
+
    /*********************
     * end of properties *
     *********************/
@@ -13099,14 +13364,6 @@ Boolean __OSKextValidateExecutable(OSKextRef aKext)
     result = true;
 
 finish:
-   /* Advise the system that we no longer need the mmapped executable.
-    */
-    if (executable) {
-        (void)posix_madvise((void *)CFDataGetBytePtr(executable),
-            CFDataGetLength(executable),
-            POSIX_MADV_DONTNEED);
-    }
-
     // xxx - how do we handle cleanup of load info?
     SAFE_RELEASE(executable);
     SAFE_RELEASE(kmodName);
@@ -13342,7 +13599,7 @@ Boolean OSKextAuthenticate(OSKextRef aKext)
     aKext->flags.inauthentic = 0;
     aKext->flags.authentic = 0;
     aKext->flags.authenticated = 0;
-    aKext->flags.sip_protected = 0;
+    aKext->flags.rootless_trusted = 0;
 
     if (__sOSKextAuthenticationFunction) {
         if (!__OSKextGetFileSystemPath(aKext, NULL, true, kextPath)) {
@@ -13353,8 +13610,8 @@ Boolean OSKextAuthenticate(OSKextRef aKext)
             result = false;
             goto finish;
         }
-        if (!__sOSKextIsSIPDisabled && rootless_check_trusted(kextPath) == 0) {
-            aKext->flags.sip_protected = 1;
+        if (rootless_check_trusted(kextPath) == 0) {
+            aKext->flags.rootless_trusted = 1;
         }
 
         result = __sOSKextAuthenticationFunction(aKext, __sOSKextAuthenticationContext);
@@ -14218,8 +14475,9 @@ Boolean __OSKextProcessInfoDictionary(
     CFDictionaryRef   dictValue           = NULL;   // do not release
     CFTypeRef         debugLevel          = NULL;   // do not release
     Boolean           isInterfaceSetFalse = false;
-    OSKextVersion     bundleVersion      = -1;
-    OSKextVersion     compatibleVersion  = -1;
+    CFStringRef       bundleType          = NULL;
+    OSKextVersion     bundleVersion       = -1;
+    OSKextVersion     compatibleVersion   = -1;
 
    /* Remove the kext from the lookup dictionary (if there). Its identifier or
     * version may change if we read the info dictionary from disk. This happens
@@ -14236,12 +14494,13 @@ Boolean __OSKextProcessInfoDictionary(
     */
     result = true;
 
-   /*********************************
-    * CFBundlePackageType == "KEXT" *
-    *********************************/
+   /**************************************
+    * CFBundlePackageType == "KEXT/DEXT" *
+    **************************************/
 
-   /* This check is somewhat pedantic, but it pretty much means
-    * the rest of the checks aren't worth doing.
+   /* CFBundlePackageType should match either KEXT or DEXT. In the latter
+    * case, mark the OSKext object as containing a userspace executable (we'll
+    * further validate this later on).
     */
     propKey = _kCFBundlePackageTypeKey;
     checkResult = __OSKextCheckProperty(aKext,
@@ -14253,10 +14512,10 @@ Boolean __OSKextProcessInfoDictionary(
         /* required */ true,
         /* typeRequired */ true,
         /* nonnilRequired */ true,
-        /* valueOut */ NULL,
-        /* valueIsNonnil */ NULL);
+        /* valueOut */ (CFTypeRef *)&bundleType,
+        /* valueIsNonnil */ &valueIsNonnil);
     result = result && checkResult;
-    if (!checkResult) {
+    if (!checkResult || !valueIsNonnil) {
         goto finish;
     }
 
@@ -14442,7 +14701,16 @@ Boolean __OSKextProcessInfoDictionary(
         &valueIsNonnil);
     result = result && checkResult;
     if (valueIsNonnil) {
-        aKext->flags.declaresExecutable = 1;
+        if (CFEqual(bundleType,
+                    __kOSKextBundlePackageTypeKext)) {
+            aKext->flags.declaresKernelExecutable = 1;
+        } else if (CFEqual(bundleType,
+                    __kOSKextBundlePackageTypeDriverKit)) {
+            aKext->flags.declaresUserExecutable = 1;
+        } else {
+            /* We should have validated this further up */
+            result = false;
+        }
     }
 
 #if SHARED_EXECUTABLE
@@ -14460,13 +14728,17 @@ Boolean __OSKextProcessInfoDictionary(
         &valueIsNonnil);
     result = result && checkResult;
    /* Can't have both executable and shared! */
-    if (aKext->flags.declaresExecutable) {
-        if (valueIsNonnil) {
+    if (valueIsNonnil) {
+        if (aKext->flags.declaresKernelExecutable) {
             __OSKextSetDiagnostic(aKext, kOSKextDiagnosticsFlagValidation,
                 kOSKextDiagnosticSharedExecutableAndExecutableKey);
+        } else if (aKext->flags.declaresUserExecutable) {
+            __OSKextSetDiagnostic(aKext, kOSKextDiagnosticsFlagValidation,
+                kOSKextDiagnosticUserExecutableAndExecutableKey);
+            result = false;
+        } else {
+            aKext->flags.declaresKernelExecutable = 1;
         }
-    } else if (valueIsNonnil) {
-        aKext->flags.declaresExecutable = 1;
     }
 #endif /* SHARED_EXECUBTABLE */
 
@@ -14522,15 +14794,66 @@ Boolean __OSKextProcessInfoDictionary(
         /* required */ false,
         /* typeRequired */ true,
         /* nonnilRequired */ false,  // required values given
-        /* valueOut */ NULL,
+        /* valueOut */ (CFTypeRef *)&stringValue,
         &valueIsNonnil);
     result = result && checkResult;
     if (valueIsNonnil) {
-        aKext->flags.isLoadableInSafeBoot = 1;
+        /*
+         * First-party driver extensions may use the OSBundleRequired key, and
+         * can be loadable in safe boot. Certain extensions with the "DriverKit"
+         * value can also have their properties included in the kernel to match
+         * on devices normally provided by kexts. Kexts aren't allowed to use
+         * this value.
+         */
+        if (aKext->flags.declaresUserExecutable) {
+            if (!_OSKextIdentifierHasApplePrefix(aKext)) {
+                __OSKextSetDiagnostic(aKext, kOSKextDiagnosticsFlagBootLevel,
+                    kOSKextDiagnosticThirdPartiesIneligibleForDriverKitOSBundleRequired);
+                result = false;
+            } else if (!(CFEqual(stringValue, CFSTR(kOSBundleRequiredDriverKit)) ||
+                         CFEqual(stringValue, CFSTR(kOSBundleRequiredSafeBoot)))) {
+                __OSKextSetDiagnostic(aKext, kOSKextDiagnosticsFlagBootLevel,
+                    kOSKextDiagnosticOSBundleRequiredValueIneligibleForDriverKit);
+                result = false;
+            }
+        } else { // !declaresUserExecutable
+            if (CFEqual(stringValue, CFSTR(kOSBundleRequiredDriverKit))) {
+                __OSKextSetDiagnostic(aKext, kOSKextDiagnosticsFlagBootLevel,
+                    kOSKextDiagnosticKextIneligibleForDriverKit);
+                result = false;
+            }
+        }
+
+        aKext->flags.isLoadableInSafeBoot = result ? 1 : 0;
     } else {
         if (OSKextGetActualSafeBoot() || OSKextGetSimulatedSafeBoot()) {
             __OSKextSetDiagnostic(aKext, kOSKextDiagnosticsFlagBootLevel,
                 kOSKextDiagnosticIneligibleInSafeBoot);
+        }
+    }
+
+    /* Certain keys aren't legal for driver extensions (kexts only). */
+    if (aKext->flags.declaresUserExecutable) {
+        CFIndex numKeys = CFArrayGetCount(__sOSKextInfoKextOnlyKeys);
+        for (CFIndex i = 0; i < numKeys; i++) {
+            propKey = CFArrayGetValueAtIndex(__sOSKextInfoKextOnlyKeys, i);
+            if (OSKextGetValueForInfoDictionaryKey(aKext, propKey)) {
+                result = false;
+
+                CFStringRef diagnostic = CFStringCreateWithFormat(kCFAllocatorDefault,
+                        NULL, kOSKextDiagnosticInfoKeyIneligibleForDriverKit, propKey);
+                if (!diagnostic) {
+                    OSKextLogStringError(aKext);
+                    goto finish;
+                }
+
+                __OSKextSetDiagnostic(aKext, kOSKextDiagnosticsFlagValidation,
+                        diagnostic);
+
+                SAFE_RELEASE(diagnostic);
+                /* Deliberately don't break here, so we can get diagnostics for
+                 * the developer containing all of the bad keys at once */
+            }
         }
     }
 
@@ -14628,6 +14951,7 @@ Boolean OSKextMatchesRequiredFlags(OSKextRef aKext,
         REQUIRED_MATCH(requiredFlags, requiredString, LocalRoot) ||
         REQUIRED_MATCH(requiredFlags, requiredString, NetworkRoot) ||
         REQUIRED_MATCH(requiredFlags, requiredString, Console) ||
+        REQUIRED_MATCH(requiredFlags, requiredString, DriverKit) ||
         REQUIRED_MATCH(requiredFlags, requiredString, SafeBoot)) {
 
         result = true;
@@ -14836,6 +15160,12 @@ Boolean __OSKextAddToMkext(
     __OSKextGetFileSystemPath(aKext, /* otherURL */ NULL,
         /* resolveToBase */ true, kextPath);
 
+    if (!__sOSKextLoadAuditFunction(aKext)) {
+        OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
+             "Load audit function returned false, bailing on adding %s to mkext.", kextPath);
+        goto finish;
+    }
+
     OSKextLog(aKext, kOSKextLogStepLevel | kOSKextLogArchiveFlag,
         "Adding %s to mkext.", kextPath);
 
@@ -14844,6 +15174,26 @@ Boolean __OSKextAddToMkext(
         OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogArchiveFlag,
             "Can't get info dictionary for %s.", kextPath);
         goto finish;
+    }
+
+    /*
+     * If this is a KASan kext, implicitly link against the KASan bundle.
+     * We've done this already in __OSKextResolveDependencies, but we have
+     * to add the dependency to the kext's Info.plist that's sent to the kernel.
+     */
+    if (OSKextDeclaresExecutable(aKext) && __OSKextHasSuffix(aKext, "_kasan") && !OSKextIsKernelComponent(aKext)) {
+        CFMutableDictionaryRef depsDict = (CFMutableDictionaryRef) OSKextGetValueForInfoDictionaryKey(
+            aKext, CFSTR(kOSBundleLibrariesKey));
+        if (depsDict) {
+            CFStringRef kasanVer = (CFStringRef)CFDictionaryGetValue(depsDict, __kOSKextKasanKPI);
+            if (!kasanVer) {
+                CFDictionarySetValue(depsDict, __kOSKextKasanKPI, __kOSKextKasanKPIVersion);
+            }
+        } else {
+            OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogArchiveFlag,
+                "Executable kext %s with no dependencies?!", kextPath);
+            goto finish;
+        }
     }
 
    /* If the kext has logging enabled, whether originally in the plist
@@ -14867,12 +15217,6 @@ Boolean __OSKextAddToMkext(
 
     if (executable) {
         uint32_t entryFileSize;
-
-       /* Advise the system that we're reading the executable sequentially.
-        */
-        (void)posix_madvise((void *)CFDataGetBytePtr(executable),
-            CFDataGetLength(executable),
-            POSIX_MADV_SEQUENTIAL);
 
         mkextEntryOffset = mkextDataStartLength;
         mkextEntryOffsetNum = CFNumberCreate(CFGetAllocator(aKext),
@@ -14940,14 +15284,6 @@ Boolean __OSKextAddToMkext(
 finish:
     if (!result) {
         CFDataSetLength(mkextData, mkextDataStartLength);
-    }
-
-   /* Advise the system that we no longer need the mmapped executable.
-    */
-    if (executable) {
-        (void)posix_madvise((void *)CFDataGetBytePtr(executable),
-            CFDataGetLength(executable),
-            POSIX_MADV_DONTNEED);
     }
 
     SAFE_RELEASE(infoDictionary);
@@ -18217,7 +18553,8 @@ static CFArrayRef __OSKextPrelinkSplitKexts(
                 if (OSKextMatchesRequiredFlags(aKext,
                                                kOSKextOSBundleRequiredRootFlag |
                                                kOSKextOSBundleRequiredLocalRootFlag |
-                                               kOSKextOSBundleRequiredNetworkRootFlag)) {
+                                               kOSKextOSBundleRequiredNetworkRootFlag |
+                                               kOSKextOSBundleRequiredDriverKitFlag)) {
                     /* This is a "rooting" kext, if we have more than a few of
                      * these fail to link then something bad has happened with
                      * our environment, abort the prelink.  13080154
@@ -18375,6 +18712,10 @@ static CFArrayRef __OSKextPrelinkKexts(
         /* Perform the link operation. Note we pass 0 for the
          * kernelLoadAddress because we should have a valid address
          * set for every kext when doing a prelinked kernel.
+         *
+         * Driver extensions don't declare a kernel executable,
+         * so linking should always succeed, but put it here for
+         * good measure should something change in the future.
          */
         success = __OSKextPerformLink(aKext, kernelImage,
                                       /* kernelLoadAddress */ 0, stripSymbolsFlag, kxldContext);
@@ -18384,10 +18725,15 @@ static CFArrayRef __OSKextPrelinkKexts(
                 if (OSKextMatchesRequiredFlags(aKext,
                                     kOSKextOSBundleRequiredRootFlag |
                                     kOSKextOSBundleRequiredLocalRootFlag |
-                                    kOSKextOSBundleRequiredNetworkRootFlag)) {
+                                    kOSKextOSBundleRequiredNetworkRootFlag |
+                                    kOSKextOSBundleRequiredDriverKitFlag)) {
                     /* This is a "rooting" kext, if we have more than a few of
                      * these fail to link then something bad has happened with
                      * our environment, abort the prelink.  13080154
+                     *
+                     * Driver extensions don't declare a kernel executable,
+                     * so linking should always succeed, but put it here for
+                     * good measure should something change in the future.
                      */
                     if (++badLinkCount > 3) {
                         needAllFlag = true;
@@ -18576,12 +18922,38 @@ static CFDataRef __OSKextCreatePrelinkInfoDictionary(
          * with the boot process.  These kexts will still be prelinked, and
          * they will be started when kextd is up and passes personalities for
          * all kexts to the kernel.
+         *
+         * Otherwise, if the kext will be included, modify it as specified
+         * (if at all) by the client.
          */
-        if (!includeAllPersonalities) {
-            if (!__OSKextRequiredAtEarlyBoot(aKext)) {
-                CFDictionaryRemoveValue(kextInfoDict, CFSTR(kIOKitPersonalitiesKey));
-                CFDictionaryRemoveValue(kextInfoDict, archPersonalitiesKey);
+        CFDictionaryRef personalities = CFDictionaryGetValue(kextInfoDict, CFSTR(kIOKitPersonalitiesKey));
+
+        if (!includeAllPersonalities && !__OSKextRequiredAtEarlyBoot(aKext)) {
+            CFDictionaryRemoveValue(kextInfoDict, CFSTR(kIOKitPersonalitiesKey));
+            CFDictionaryRemoveValue(kextInfoDict, archPersonalitiesKey);
+        } else if (personalities && CFDictionaryGetCount(personalities)) {
+            /* Modify the existing personalities going into the PLK - clients may have set
+             * __sOSKextPersonalityPatcherFunction. */
+
+            __OSKextPersonalityPatcherContext context;
+            context.kext               = aKext;
+            context.personalityNames   = NULL;
+            context.personalitiesArray = NULL;
+            context.personalitiesDict  = CFDictionaryCreateMutable(kCFAllocatorDefault,
+                                            CFDictionaryGetCount(personalities),
+                                            &kCFTypeDictionaryKeyCallBacks,
+                                            &kCFTypeDictionaryValueCallBacks);
+            context.includeBundleIDs   = false;
+            if (!context.personalitiesDict) {
+                OSKextLogMemError();
+                goto finish;
             }
+
+            CFDictionaryApplyFunction(personalities,
+                __OSKextPersonalityPatcherApplierFunction,
+                &context);
+
+            CFDictionarySetValue(kextInfoDict, CFSTR(kIOKitPersonalitiesKey), context.personalitiesDict);
         }
 
         /* Add the load address, source address, and kmod info address information.
@@ -18589,21 +18961,21 @@ static CFDataRef __OSKextCreatePrelinkInfoDictionary(
         if (OSKextDeclaresExecutable(aKext)) {
             if (isSplitKexts) {
                 int64_t kextExecSize = (int64_t)(aKext->loadInfo->linkInfo.linkedKextSize);
-                
+
                 cfnum = CFNumberCreate(kCFAllocatorDefault,
-                                       kCFNumberSInt64Type,
+                                      kCFNumberSInt64Type,
                                        &aKext->loadInfo->linkInfo.vmaddr_TEXT);
                 if (!cfnum) {
                     OSKextLogMemError();
                     goto finish;
                 }
-                
+
                 CFDictionarySetValue(kextInfoDict, CFSTR(kPrelinkExecutableLoadKey), cfnum);
-                
+
                 // same value for kPrelinkExecutableLoadKey and kPrelinkExecutableSourceKey
                 CFDictionarySetValue(kextInfoDict, CFSTR(kPrelinkExecutableSourceKey), cfnum);
                 SAFE_RELEASE_NULL(cfnum);
-                
+
                 // use only the TEXT segment of a split kext for the PrelinkExecutableSizeKey value
                 if (aKext->loadInfo->linkInfo.vmaddr_TEXT_EXEC) {
                     struct mach_header_64 * kextHeader = (struct mach_header_64 *)(aKext->loadInfo->linkInfo.linkedKext);
@@ -18612,13 +18984,13 @@ static CFDataRef __OSKextCreatePrelinkInfoDictionary(
                     if (seg_cmd)
                         kextExecSize = (int64_t)(seg_cmd->vmsize);
                 }
-                
+
                 cfnum = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &kextExecSize);
                 if (!cfnum) {
                     OSKextLogMemError();
                     goto finish;
                 }
-                
+
                 CFDictionarySetValue(kextInfoDict, CFSTR(kPrelinkExecutableSizeKey), cfnum);
                 SAFE_RELEASE_NULL(cfnum);
 
@@ -18638,17 +19010,17 @@ static CFDataRef __OSKextCreatePrelinkInfoDictionary(
                 }
                 CFDictionarySetValue(kextInfoDict, CFSTR(kPrelinkExecutableLoadKey), cfnum);
                 SAFE_RELEASE_NULL(cfnum);
-                
+
                 cfnum = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type,
                                        &aKext->loadInfo->sourceAddress);
-                
+
                 if (!cfnum) {
                     OSKextLogMemError();
                     goto finish;
                 }
                 CFDictionarySetValue(kextInfoDict, CFSTR(kPrelinkExecutableSourceKey), cfnum);
                 SAFE_RELEASE_NULL(cfnum);
-                
+
                 u_long num;
                 num = CFDataGetLength(aKext->loadInfo->prelinkedExecutable);
                 cfnum = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &num);
@@ -18790,7 +19162,7 @@ __OSKextRequiredAtEarlyBoot(
     bundleRequired = (CFStringRef)OSKextGetValueForInfoDictionaryKey(theKext,
         CFSTR(kOSBundleRequiredKey));
 
-    return (bundleRequired && kCFCompareEqualTo != 
+    return (bundleRequired && kCFCompareEqualTo !=
         CFStringCompare(bundleRequired, CFSTR(kOSBundleRequiredSafeBoot), 0));
 }
 
@@ -19739,7 +20111,7 @@ CFStringRef OSKextCopyExecutableName(OSKextRef aKext)
     CFStringRef  result            = NULL;
     CFURLRef     executableURL     = NULL;  // do not release
 
-    executableURL = OSKextGetExecutableURL(aKext);
+    executableURL = OSKextGetKernelExecutableURL(aKext);
     if (!executableURL) {
         goto finish;
     }

@@ -59,12 +59,15 @@
 #define kIOPSRawExternalConnectivityKey     "Raw External Connected"
 
 /* kIOPSShowChargingUIKey specifies whether the UI should treat the device
- * as charging or not. This represents whether the device is connected to
- * any external power source capable of charging the device's battery. This is
- * differentiated from kIOPSRawExternalConnectivityKey, in that the external
- * power source may not be currently providing power.
+ * as charging or not.
  */
 #define kIOPSShowChargingUIKey     "Show Charging UI"
+
+/* kIOPSPlayChargingChimeKey specifies whether the attached charger is meant
+ * to cause UI to make an audible chime in addition to showing the charging
+ * UI, as indicated by kIOPSShowChargingUIKey.
+ */
+#define kIOPSPlayChargingChimeKey     "Play Charging Chime"
 
 
 /*
@@ -148,6 +151,7 @@
  * Possible Categories of accessories(kIOPSAccessoryCategoryKey)
  */
 #define kIOPSAccessoryCategoryAudioBatteryCase   "Audio Battery Case"
+#define kIOPSAccessoryCategoryGameController     "Game Controller"
 #define kIOPSAccessoryCategorySpeaker       "Speaker"
 #define kIOPSAccessoryCategoryHeadphone     "Headphone"
 #define kIOPSAccessoryCategoryWatch         "Watch"
@@ -279,6 +283,18 @@
 #define kIOPSAppleBatteryCaseAvailableCurrentKey "Battery Case Available Current"
 
 /*!
+ * @define      kAppleBatteryCaseChargingVoltageKey
+ * @abstract    CFDictionary key for a the voltage a battery case is charging from.
+ *
+ * @discussion
+ *              <ul>
+ *              <li> Apple-defined power sources will publish this key in units mV.
+ *              <li> Type CFNumber kCFNumberIntType (signed integer)
+ *              </ul>
+ */
+#define kAppleBatteryCaseChargingVoltageKey "Battery Case Charging Voltage"
+
+/*!
  * @define      kIOPSAppleBatteryCaseChemIDKey
  * @abstract    CFDictionary key for a battery case's battery's Chem ID.
  *
@@ -290,6 +306,73 @@
  *              </ul>
  */
 #define kIOPSAppleBatteryCaseChemIDKey "Battery Case Chem ID"
+
+/*!
+ * @define      kIOPSAppleBatteryCaseAddress
+ *
+ * @abstract    CFDictionary key for a battery case's advertised resolvable public address,
+ *              as assigned by the last device it was attached to.
+ * @discussion
+ *              <ul>
+ *              <li> Apple-defined power sources may publish this key.
+ *              <li> Type CFData
+ *              <li> A 6-byte address wrapped in an CFData object.
+ *              </ul>
+ */
+#define kIOPSAppleBatteryCaseAddress "Address"
+
+/*!
+ * @define      kIOPSAppleBatteryCaseIncomingVoltage
+ *
+ * @abstract    CFDictionary key for a battery case's incoming voltage
+ * @discussion
+ *              <ul>
+ *              <li> Apple-defined power sources may publish this key in units mV.
+ *              <li> Type CFNumber kCFNumberIntType (signed integer)
+ *              </ul>
+ */
+#define kIOPSAppleBatteryCaseIncomingVoltage "Incoming Voltage"
+
+/*!
+ * @define      kIOPSAppleBatteryCaseIncomingCurrent
+ *
+ * @abstract    CFDictionary key for a battery case's incoming current
+ * @discussion
+ *              <ul>
+ *              <li> Apple-defined power sources may publish this key in units mA.
+ *              <li> Type CFNumber kCFNumberIntType (signed integer)
+ *              </ul>
+ */
+#define kIOPSAppleBatteryCaseIncomingCurrent "Incoming Current"
+
+/*!
+ * @define      kIOPSAppleBatteryCaseCell0Voltage
+ *
+ * @abstract    CFDictionary key for a battery case's first cell's voltage
+ * @discussion
+ *              <ul>
+ *              <li> Apple-defined power sources may publish this key in units mV.
+ *              <li> Type CFNumber kCFNumberIntType (signed integer)
+ *              </ul>
+ */
+#define kIOPSAppleBatteryCaseCell0Voltage "Cell 0 Voltage"
+
+/*!
+ * @define      kIOPSAppleBatteryCaseCell1Voltage
+ *
+ * @abstract    CFDictionary key for a battery case's second cell's voltage
+ * @discussion
+ *              <ul>
+ *              <li> Apple-defined power sources may publish this key in units mV.
+ *              <li> Type CFNumber kCFNumberIntType (signed integer)
+ *              </ul>
+ */
+#define kIOPSAppleBatteryCaseCell1Voltage "Cell 1 Voltage"
+
+
+/*
+ * Battery case related internal commands
+ */
 
 /*!
  * @define      kIOPSAppleBatteryCaseCommandSetCurrentLimitBackOffKey
@@ -304,6 +387,17 @@
 #define kIOPSAppleBatteryCaseCommandSetCurrentLimitBackOffKey "Current Limit Back Off"
 
 /*!
+ * @define      kIOPSCommandSendAverageChargingCurrent
+ *
+ * @abstract Tell the UPS the device's average current drawn from the charger
+ * @discussion
+ *              <ul>
+ *                  <li>The matching argument should be a CFNumber of kCFNumberIntType specifying the device's
+ *                  <li>average current draw from the charger in mA.
+ */
+#define kIOPSCommandSendAverageChargingCurrent       "Send Average Charging Current"
+
+/*!
  * @define      kIOPSAppleBatteryCaseCommandEnableChargingKey
  *
  * @abstract    Tell the battery case of whether it should enable its boost to enable charging.
@@ -316,20 +410,6 @@
 #define kIOPSAppleBatteryCaseCommandEnableChargingKey "Enable Charging"
 
 /*!
- * @define      kIOPSAppleBatteryCaseAddress
- *
- * @abstract    CFDictionary key for a battery case's advertised resolvable public address,
- *              as assigned by the last device it was attached to.
- * @discussion
- *              <ul>
- *              <li> Apple-defined power sources may publish this key.
- *              <li> Type CFString
- *              <li> A 6-byte address in the format "XX:XX:XX:XX:XX:XX"
- *              </ul>
- */
-#define kIOPSAppleBatteryCaseAddress "Address"
-
-/*!
  * @define      kIOPSAppleBatteryCaseCommandSetAddress
  *
  * @abstract    Tell the battery case what resolvable public address it should advertise.
@@ -339,6 +419,42 @@
  *              </ul>
  */
 #define kIOPSAppleBatteryCaseCommandSetAddress "Set Address"
+
+
+/*
+ * Debug Information Dictionary/Keys
+ */
+
+/*!
+ * @define      kIOPSDebugInformationKey
+ *
+ * @abstract    Dictionary containing CFString keys mapped to 32-bit CFNumber values.
+ * @discussion  Key/Value pairs are device specific. Some keys are defined here, but no gurantees are made
+ *              in regards to the formatting of their values.
+ *              <ul>
+ *              <li> Type CFDictionaryRef.
+ *              </ul>
+ */
+#define kIOPSDebugInformationKey "Debug Information"
+
+// Keys for use in the kIOPSDebugInformationKey dictionary
+#define kIOPSDebugInformation_PowerStatusKey       "PowerStatus"
+#define kIOPSDebugInformation_ChargingStatusKey    "ChargingStatus"
+#define kIOPSDebugInformation_InductiveStatusKey   "InductiveStatus"
+
+
+
+/*!
+ * @define      kIOPSDeviceColor
+ *
+ * @abstract    CFDictionary key for a power source's physical device color.
+ * @discussion
+ *              <ul>
+ *              <li> Apple-defined power sources may publish this key.
+ *              <li> Type CFNumber kCFNumberIntType (signed integer)
+ *              </ul>
+ */
+#define kIOPSDeviceColor "Device Color"
 
 /*!
  * @define      kIOPSLEDsKey
@@ -417,4 +533,5 @@
  * @abstract    Potential value for key <code>@link kIOPSLeddColorKey@/link</code>
  */
 #define kIOPSLedColorOrange   "Orange"
+
 #endif /* defined(_IOPSKEYSPRIVATE_H_) */
