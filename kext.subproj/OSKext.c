@@ -813,6 +813,9 @@ static Boolean __OSKextAddLinkDependencies(
     Boolean           needAllFlag,
     Boolean           bleedthroughFlag);
 
+static CFMutableArrayRef __CFDictionaryCopyKeys(
+    CFDictionaryRef aDict);
+
 static Boolean __OSKextReadSymbolReferences(
     OSKextRef              aKext,
     CFMutableDictionaryRef symbols);
@@ -1182,6 +1185,7 @@ CFStringRef __OSKextCopyExecutableRelativePath(OSKextRef aKext);
 static bool __OSKextShouldLog(
     OSKextRef        aKext,
     OSKextLogSpec    msgLogSpec);
+
 
 Boolean _isArray(CFTypeRef);
 Boolean _isDictionary(CFTypeRef);
@@ -3211,6 +3215,7 @@ CFMutableArrayRef __OSKextCreateKextsFromURL(
         }
         goto finish;
     }
+
 
    /*****
     * If anURL is not a kext bundle, then scan it as a directory
@@ -6935,7 +6940,7 @@ CFDataRef __OSKextMapExecutable(
         */
         executableBuffer = mmap(/* addr */ NULL, length,
             PROT_READ|PROT_WRITE, MAP_FILE|MAP_PRIVATE, executableFD, offset);
-        if (!executableBuffer) {
+        if (executableBuffer == MAP_FAILED) {
             localErrno = errno;
             
            /* Only if we are mapping the executable as a whole, flag its
@@ -8741,6 +8746,7 @@ Boolean __OSKextReadSymbolReferences(
     unsigned int               num_syms      = 0;
     unsigned int               syms_bytes    = 0;
     unsigned int               sym_index     = 0;
+    size_t                     nlist_size    = sizeof(struct nlist);  // assume 32-bit, update below if 64-bit.
 
     __OSKextGetFileSystemPath(aKext, /* otherURL */ NULL,
         /* resolveToBase */ false, kextPath);
@@ -8769,6 +8775,7 @@ Boolean __OSKextReadSymbolReferences(
 
     if (ISMACHO64(MAGIC32(mach_header))) {
         sixtyfourbit = true;
+        nlist_size = sizeof(struct nlist_64);
     }
     if (ISSWAPPEDMACHO(MAGIC32(mach_header))) {
         swap = 1;
@@ -8788,7 +8795,7 @@ Boolean __OSKextReadSymbolReferences(
 
     syms_address = (char *)mach_header + sym_offset;
     string_list = (char *)mach_header + str_offset;
-    syms_bytes = num_syms * sizeof(struct nlist);
+    syms_bytes = num_syms * nlist_size;
 
     if (syms_address + syms_bytes > (char *)file_end) {
         OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLinkFlag,
@@ -8838,6 +8845,68 @@ Boolean __OSKextReadSymbolReferences(
 finish:
 
     SAFE_RELEASE(executable);
+    return result;
+}
+
+static CFMutableArrayRef __CFDictionaryCopyKeys(
+    CFDictionaryRef aDict)
+{
+    CFMutableArrayRef   result      = NULL;
+    CFIndex             keyCount    = 0;
+    void                **keys      = NULL; // must free
+
+    result = CFArrayCreateMutable(CFGetAllocator(aDict), 0, &kCFTypeArrayCallBacks);
+    if (!result) {
+        OSKextLogMemError();
+        goto finish;
+    }
+
+    keyCount = CFDictionaryGetCount(aDict);
+    if (keyCount == 0) {
+        goto finish;
+    }
+
+    keys = malloc(sizeof(*keys) * keyCount);
+    if (!keys) {
+        OSKextLogMemError();
+        SAFE_RELEASE_NULL(result);
+        goto finish;
+    }
+    bzero(keys, sizeof(*keys) * keyCount);
+
+    CFDictionaryGetKeysAndValues(aDict, (const void **)keys, NULL);
+    CFArrayReplaceValues(result, CFRangeMake(0, 0), (const void **)keys, keyCount);
+
+finish:
+    SAFE_FREE(keys);
+
+    return result;
+}
+
+/*********************************************************************
+*********************************************************************/
+CFMutableArrayRef OSKextCopySymbolReferences(
+    OSKextRef aKext)
+{
+    CFMutableArrayRef      result          = NULL;
+    CFMutableDictionaryRef undefSymbols    = NULL;  // must release
+
+    undefSymbols = CFDictionaryCreateMutable(CFGetAllocator(aKext),
+         0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    if (!undefSymbols) {
+        OSKextLogMemError();
+        goto finish;
+    }
+
+    if (!__OSKextReadSymbolReferences(aKext, undefSymbols)) {
+        goto finish;
+    }
+
+    result = __CFDictionaryCopyKeys(undefSymbols);
+
+finish:
+    SAFE_RELEASE(undefSymbols);
+
     return result;
 }
 
@@ -8917,6 +8986,7 @@ Boolean __OSKextFindSymbols(
     unsigned int               num_syms      = 0;
     unsigned int               syms_bytes    = 0;
     unsigned int               sym_index     = 0;
+    size_t                     nlist_size    = sizeof(struct nlist);  // assume 32-bit, update below if 64-bit
     CFMutableArrayRef          libsArray     = NULL;  // release if created
     OSKextRef                  libKext       = NULL;  // do not release
     char                     * symbol_name   = NULL;  // do not free
@@ -8941,6 +9011,7 @@ Boolean __OSKextFindSymbols(
 
     if (ISMACHO64(MAGIC32(mach_header))) {
         sixtyfourbit = true;
+        nlist_size = sizeof(struct nlist_64);
     }
     if (ISSWAPPEDMACHO(MAGIC32(mach_header))) {
         swap = 1;
@@ -8960,7 +9031,7 @@ Boolean __OSKextFindSymbols(
 
     syms_address = (char *)mach_header + sym_offset;
     string_list = (char *)mach_header + str_offset;
-    syms_bytes = num_syms * sizeof(struct nlist);
+    syms_bytes = num_syms * nlist_size;
 
     if (syms_address + syms_bytes > (char *)file_end) {
         OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogLinkFlag,
@@ -12407,6 +12478,7 @@ CFDictionaryRef OSKextCopyLoadedKextInfo(
     CFArrayRef kextIdentifiers,
     CFArrayRef infoKeys)
 {
+
     CFDictionaryRef        result        = NULL;
     OSReturn               op_result     = kOSReturnError;
     CFMutableDictionaryRef requestDict   = NULL;  // must release
@@ -20210,6 +20282,7 @@ static bool __OSKextShouldLog(
 
     return logSpecMatch(msgLogSpec, __sUserLogFilter);
 }
+
 
 /*********************************************************************
 *********************************************************************/

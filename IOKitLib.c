@@ -35,6 +35,7 @@
 #include <servers/bootstrap.h>
 #endif
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/file.h>
@@ -43,13 +44,14 @@
 #include <unistd.h>
 #include <asl.h>
 #include <dispatch/dispatch.h>
-#include <dispatch/private.h> 
+#include <dispatch/private.h>
 #include <xpc/xpc.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFMachPort.h>
 
 #include <libkern/OSAtomic.h>
+#include <libkern/OSKextLibPrivate.h>
 
 #include <IOKit/IOBSD.h>
 #include <IOKit/IOKitLib.h>
@@ -90,10 +92,17 @@ typedef struct OSNotificationHeader NotificationHeader;
 
 #endif
 
+#if IOKIT_SERVER_VERSION >= 20190926 && !TARGET_OS_SIMULATOR
+#define IOKIT_HAS_GET_PROPERTY_WITH_BUF 1
+#else
+#define IOKIT_HAS_GET_PROPERTY_WITH_BUF 0
+#endif
+
 uint64_t 
 gIOKitLibServerVersion;
 CFOptionFlags
 gIOKitLibSerializeOptions = kIOCFSerializeToBinary;
+
 
 /*
  * Ports
@@ -227,7 +236,8 @@ IOObjectGetClass(
 	io_object_t	object,
 	io_name_t       className )
 {
-    return _IOObjectGetClass(object, 0, className);
+    kern_return_t result = _IOObjectGetClass(object, 0, className);
+    return result;
 }
 
 kern_return_t
@@ -252,7 +262,8 @@ _IOObjectGetClass(
     }
 #endif /* !TARGET_OS_SIMULATOR */
 
-    return( override ? kIOReturnSuccess : io_object_get_class( object, className ));
+    kern_return_t result = ( override ? kIOReturnSuccess : io_object_get_class( object, className ));
+    return result;
 }
 
 
@@ -294,8 +305,9 @@ IOObjectCopySuperclassForClass(CFStringRef classname)
 	return my_str;
     }
 
-    my_cstr = malloc(sizeof(char) * 128);
-    CFStringGetCString (classname, my_cstr, 128, kCFStringEncodingUTF8);
+    my_cstr = malloc(sizeof(io_name_t));
+    bzero(my_cstr, sizeof(io_name_t));
+    CFStringGetCString (classname, my_cstr, sizeof(io_name_t), kCFStringEncodingUTF8);
 
     strncpy(orig_name, my_cstr, sizeof(io_name_t));
 
@@ -327,8 +339,8 @@ IOObjectCopyBundleIdentifierForClass(CFStringRef classname)
 	return my_str;
     }
 
-    my_cstr = malloc(sizeof(char) * 128);
-    CFStringGetCString (classname, my_cstr, 128, kCFStringEncodingUTF8);
+    my_cstr = malloc(sizeof(io_name_t));
+    CFStringGetCString (classname, my_cstr, sizeof(io_name_t), kCFStringEncodingUTF8);
 
     strncpy(orig_name, my_cstr, sizeof(io_name_t));
 
@@ -1859,6 +1871,7 @@ IOConnectCallAsyncMethod(
     mach_vm_size_t		 ool_input_size  = 0;
     mach_vm_address_t		 ool_output      = 0;
     mach_vm_size_t		 ool_output_size = 0;
+    static uint64_t		 temp_reference[1] = {0};
 
     if (inputStructCnt <= sizeof(io_struct_inband_t)) {
 	inb_input      = (void *) inputStruct;
@@ -1885,6 +1898,11 @@ IOConnectCallAsyncMethod(
 	    ool_output      = reinterpret_cast_mach_vm_address_t(outputStruct);
 	    ool_output_size = (mach_vm_size_t)    size;
 	}
+    }
+
+    if (reference == NULL && referenceCnt == 0) {
+        reference = temp_reference;
+        referenceCnt = 1;
     }
 
     rtn = io_connect_async_method(connection,         wakePort,
@@ -2273,7 +2291,8 @@ IORegistryEntryGetPath(
 	const io_name_t		plane,
 	io_string_t		path )
 {
-    return( io_registry_entry_get_path( entry, (char *) plane, path ));
+    kern_return_t kr = io_registry_entry_get_path( entry, (char *) plane, path );
+    return kr;
 }
 
 CFStringRef
@@ -2328,7 +2347,8 @@ IORegistryEntryGetName(
 	io_registry_entry_t	entry,
 	io_name_t 	        name )
 {
-    return( io_registry_entry_get_name( entry, name ));
+    kern_return_t result = ( io_registry_entry_get_name( entry, name ));
+    return result;
 }
 
 kern_return_t
@@ -2337,10 +2357,12 @@ IORegistryEntryGetNameInPlane(
 	const io_name_t 	plane,
 	io_name_t 	        name )
 {
+
     if( NULL == plane)
         plane = "";
-    return( io_registry_entry_get_name_in_plane( entry,
-						(char *) plane, name ));
+    kern_return_t result = ( io_registry_entry_get_name_in_plane( entry,
+                                                                 (char *) plane, name ));
+    return result;
 }
 
 kern_return_t
@@ -2349,10 +2371,12 @@ IORegistryEntryGetLocationInPlane(
 	const io_name_t 	plane,
 	io_name_t 	        location )
 {
+
     if( NULL == plane)
         plane = "";
-    return( io_registry_entry_get_location_in_plane( entry,
-						(char *) plane, location ));
+    kern_return_t result = ( io_registry_entry_get_location_in_plane( entry,
+                                                                     (char *) plane, location ));
+    return result;
 }
 
 kern_return_t
@@ -2376,16 +2400,25 @@ IORegistryEntryCreateCFProperties(
         CFAllocatorRef		allocator,
 	IOOptionBits   options __unused )
 {
-    kern_return_t 	kr;
-    uint32_t	 	size;
-    char *	 	propertiesBuffer;
-    CFStringRef  	errorString;
-    const char * 	cstr;
+    kern_return_t	kr;
+    uint32_t		size;
+    char *		propertiesBuffer;
+    CFStringRef		errorString;
+    const char *	cstr;
+#if IOKIT_HAS_GET_PROPERTY_WITH_BUF
+    char		sBuf[2048];
+    mach_vm_size_t      sBufSize = sizeof(sBuf);
+#endif // IOKIT_HAS_GET_PROPERTY_WITH_BUF
 
 #if IOKIT_SERVER_VERSION >= 20140421
     if (kIOCFSerializeToBinary & gIOKitLibSerializeOptions)
     {
+#if IOKIT_HAS_GET_PROPERTY_WITH_BUF
+	kr = io_registry_entry_get_properties_bin_buf(entry,
+	    (mach_vm_address_t)sBuf, &sBufSize, &propertiesBuffer, &size);
+#else
 	kr = io_registry_entry_get_properties_bin(entry, &propertiesBuffer, &size);
+#endif // IOKIT_HAS_GET_PROPERTY_WITH_BUF
     }
     else
 #endif /* IOKIT_SERVER_VERSION >= 20140421 */
@@ -2395,16 +2428,28 @@ IORegistryEntryCreateCFProperties(
 
     if (kr != kIOReturnSuccess) return (kr);
 
-    *properties = (CFMutableDictionaryRef) IOCFUnserializeWithSize(propertiesBuffer, size, allocator,
-								  0, &errorString);
+    if (propertiesBuffer) {
+	    *properties = (CFMutableDictionaryRef) IOCFUnserializeWithSize(propertiesBuffer, size, allocator,
+									  0, &errorString);
+    } else {
+#if IOKIT_HAS_GET_PROPERTY_WITH_BUF
+        *properties = (CFMutableDictionaryRef) IOCFUnserializeWithSize(sBuf, sBufSize, allocator,
+                                        0, &errorString);
+#else
+        *properties = NULL;
+#endif // IOKIT_HAS_GET_PROPERTY_WITH_BUF
+    }
+
     if (!(*properties) && errorString)
     {
         if ((cstr = CFStringGetCStringPtr(errorString, kCFStringEncodingMacRoman))) printf("%s\n", cstr);
 	CFRelease(errorString);
     }
 
-    // free propertiesBuffer !
-    vm_deallocate(mach_task_self(), (vm_address_t)propertiesBuffer, size);
+    if (propertiesBuffer) {
+	    // free propertiesBuffer !
+	    vm_deallocate(mach_task_self(), (vm_address_t)propertiesBuffer, size);
+    }
 
     return( *properties ? kIOReturnSuccess : kIOReturnInternalError );
 }
@@ -2428,12 +2473,16 @@ IORegistryEntrySearchCFProperty(
 	IOOptionBits		options )
 {
     IOReturn		kr;
-    CFTypeRef		type;
-    uint32_t	 	size;
-    char *	 	propertiesBuffer;
-    CFStringRef  	errorString;
-    const char *    	cStr;
-    char *	    	buffer = NULL;
+    CFTypeRef		type = NULL;
+    uint32_t		size;
+    char *		propertiesBuffer;
+    CFStringRef		errorString;
+    const char *	cStr;
+    char *		buffer = NULL;
+#if IOKIT_HAS_GET_PROPERTY_WITH_BUF
+    char		sBuf[2048];
+    mach_vm_size_t      sBufSize = sizeof(sBuf);
+#endif // IOKIT_HAS_GET_PROPERTY_WITH_BUF
 
     cStr = CFStringGetCStringPtr( key, kCFStringEncodingMacRoman);
     if( !cStr)
@@ -2444,14 +2493,18 @@ IORegistryEntrySearchCFProperty(
         if( buffer && CFStringGetCString( key, buffer, bufferSize, kCFStringEncodingMacRoman))
             cStr = buffer;
     }
-
-    if (!cStr) kr = kIOReturnError;
+if (!cStr) kr = kIOReturnError;
 #if IOKIT_SERVER_VERSION >= 20140421
     else if (kIOCFSerializeToBinary & gIOKitLibSerializeOptions)
     {
 	if (!(kIORegistryIterateRecursively & options)) plane = "\0";
+#if IOKIT_HAS_GET_PROPERTY_WITH_BUF
+        kr = io_registry_entry_get_property_bin_buf(entry, (char *) plane, (char *) cStr,
+            options, (mach_vm_address_t)sBuf, &sBufSize, &propertiesBuffer, &size);
+#else
         kr = io_registry_entry_get_property_bin(entry, (char *) plane, (char *) cStr,
                                                 options, &propertiesBuffer, &size);
+#endif // IOKIT_HAS_GET_PROPERTY_WITH_BUF
     }
 #endif /* IOKIT_SERVER_VERSION >= 20140421 */
     else if (kIORegistryIterateRecursively & options)
@@ -2467,16 +2520,25 @@ IORegistryEntrySearchCFProperty(
     if (buffer) free(buffer);
     if (kr != kIOReturnSuccess) return (NULL);
 
-    type = (CFMutableDictionaryRef) IOCFUnserializeWithSize(propertiesBuffer, size, allocator,
-							    0, &errorString);
+    if (propertiesBuffer) {
+        type = (CFMutableDictionaryRef) IOCFUnserializeWithSize(propertiesBuffer, size, allocator,
+                                    0, &errorString);
+#if IOKIT_HAS_GET_PROPERTY_WITH_BUF
+    } else {
+	    type = (CFMutableDictionaryRef) IOCFUnserializeWithSize(sBuf, sBufSize, allocator,
+								    0, &errorString);
+#endif // IOKIT_HAS_GET_PROPERTY_WITH_BUF
+    }
     if (!type && errorString)
     {
         if ((cStr = CFStringGetCStringPtr(errorString, kCFStringEncodingMacRoman))) printf("%s\n", cStr);
 	CFRelease(errorString);
     }
 
-    // free propertiesBuffer !
-    vm_deallocate(mach_task_self(), (vm_address_t)propertiesBuffer, size);
+    if (propertiesBuffer) {
+	    // free propertiesBuffer !
+	    vm_deallocate(mach_task_self(), (vm_address_t)propertiesBuffer, size);
+    }
 
     return( type );
 }
@@ -2702,7 +2764,6 @@ IOCatalogueTerminate(
 	masterPort = _masterPort;
 
     kr = io_catalog_terminate( masterPort, flag, description );
-
     if ((masterPort != MACH_PORT_NULL) && (masterPort != _masterPort))
 	mach_port_deallocate(mach_task_self(), masterPort);
 

@@ -706,6 +706,20 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
 
 #define kIOPMAssertionResourcesUsed                         CFSTR("ResourcesUsed")
 
+/*!
+ * @define          kIOPMAssertionProcessingHotPlug
+ *
+ * @abstract        The CFDictionary key in assertion info dictionary for enabling WindowServer to hold off sleep
+ *                  when processing a hot plug event
+ *
+ * @discussion      The value for this key will be a CFBooleanRef, with value <code>kCFBooleanTrue</code>
+ *                  This property is valid only for assertion <code>@link kIOPMAssertionTypePreventSystemSleep @/link</code>
+ *                  and should be used only by WindowServer. When an assertion with this property is created the device will
+ *                  not sleep on lid close.
+ */
+
+#define kIOPMAssertionProcessingHotPlug                     CFSTR("ProcessingHotPlug")
+
 /*
  * Resource strings that can be used with kIOPMAssertionResourcesUsed key.
  */
@@ -1444,6 +1458,8 @@ void IOPMUnregisterExceptionNotification(IOPMNotificationHandle handle);
 #define kIOPMTCPKeepAlivePrefKey                        "TCPKeepAlivePref"
 // units - CFNumber 0/1
 #define kIOPMProximityDarkWakeKey                       "ProximityDarkWake"
+// units - CFNumber 0/1
+#define kIOPMProModeKey                                 "ProMode"
 
 #define kIOPMUpdateDarkWakeBGSettingKey                 "Update DarkWakeBG Setting"
 #define kIOPMDarkWakeLingerDurationKey                  "DarkWake Linger Duration"
@@ -1454,9 +1470,24 @@ void IOPMUnregisterExceptionNotification(IOPMNotificationHandle handle);
 #define kIOPMCarrierModeVh                              "Carrier Mode High Voltage"
 #define kIOPMCarrierModeVl                              "Carrier Mode Low Voltage"
 
+#define kIOPMVact                                       "VAC-T"
+
 // Restart on Kernel panic
 // Deprecated in 10.8. Do not use.
 #define kIOPMRestartOnKernelPanicKey                    "RestartAfterKernelPanic"
+
+/*!
+ * @constant    kIOPMSystemProModeEnaged
+ * @abstract    Notify(3) string that PM fires every time the system enters ProMode.
+ */
+#define kIOPMSystemProModeEngaged						"com.apple.system.promode.engaged"
+
+/*!
+ * @constant    kIOPMSystemProModeDisengaged
+ * @abstract    Notify(3) string that PM fires every time the system exits ProMode
+ */
+#define kIOPMSystemProModeDisengaged					"com.apple.system.promode.disengaged"
+
 
 // See xnu/iokit/IOKit/pwr_mgt/IOPM.h for other PM Settings keys:
 //  kIOPMDeepSleepEnabledKey 
@@ -3088,7 +3119,7 @@ IOReturn IOPMSetReservePowerMode(bool enable);
  *
  * @discussion      IOPMUserIsActive() distinguishes whether the system is awake because of a user generated event,
  *          or a notification event via <code>IOPMAssertionDeclareNotificationEvent</code>.
- *          <code>IOPMUserIsActive</code> returns true for 5 minutes following a user event, and any time a user active assertion is held.
+ *          <code>IOPMUserIsActive</code> returns true for any time the display is on for user events
  *          If the display is asleep, or the system is in DarkWake, IOPMUserIsActive will return false.
  *          User activity events include:
  *          <ul><li>HID events

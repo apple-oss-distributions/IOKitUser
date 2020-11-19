@@ -65,9 +65,14 @@ typedef struct {
 
 PMSettingDescriptorStruct defaultSettings[] =
 {   /* Setting Name                                 AC - Battery - UPS */
-    {kIOPMAutoPowerOffDelayKey,                     28800,   0,  0},
+    {kIOPMAutoPowerOffDelayKey,                    259200,   0,  0},
     {kIOPMAutoPowerOffEnabledKey,                       0,   0,  0},
+#if defined(TARGET_OS_OSX) && !defined(__x86_64__)
+    {kIOPMDarkWakeBackgroundTaskKey,                    1,   1,  0},
+#else /* defined(TARGET_OS_OSX) && !defined(__x86_64__) */
     {kIOPMDarkWakeBackgroundTaskKey,                    1,   0,  0},
+#endif /* !(defined(TARGET_OS_OSX) && !defined(__x86_64__)) */
+
     {kIOPMDeepSleepEnabledKey,                          0,   0,  0},
     {kIOPMDeepSleepDelayKey,                            0,   0,  0},
     {kIOPMDiskSleepKey,                                 10, 10, 10},
@@ -83,7 +88,13 @@ PMSettingDescriptorStruct defaultSettings[] =
     {kIOPMReduceSpeedKey,                               0,   0,  1},
     {kIOPMRestartOnPowerLossKey,                        0,   0,  0},
     {kIOPMSleepOnPowerButtonKey,                        1,   1,  1},
+#if TARGET_OS_IPHONE
+    {kIOPMSystemSleepKey,                               2147483647, 2147483647, 2147483647},
+#elif defined(TARGET_OS_OSX) && !defined(__x86_64__)
+    {kIOPMSystemSleepKey,                                1,  1,  1},
+#else
     {kIOPMSystemSleepKey,                               10, 10, 10},
+#endif
     {kIOPMTTYSPreventSleepKey,                          1,   1,  1},
     {kIOPMWakeOnACChangeKey,                            0,   0,  0},
     {kIOPMWakeOnClamshellKey,                           1,   1,  1},
@@ -91,6 +102,7 @@ PMSettingDescriptorStruct defaultSettings[] =
     {kIOPMWakeOnRingKey,                                1,   0,  0},
     {kIOPMTCPKeepAlivePrefKey,                          1,   1,  1},
     {kIOPMProximityDarkWakeKey,                         1,   0,  0},
+    {kIOPMProModeKey,                                   0,   0,  0},
 };
 
 static const int kPMSettingsCount = sizeof(defaultSettings)/sizeof(PMSettingDescriptorStruct);
@@ -260,9 +272,11 @@ bool isA_GenericPref(CFStringRef key)
         CFSTR(kIOPMRestartOnPowerLossKey),
         CFSTR(kIOPMSystemSleepKey),
         CFSTR(kIOPMWakeOnLANKey),
+        CFSTR(kIOPMProModeKey),
         CFSTR(kIOPMCarrierMode),
         CFSTR(kIOPMCarrierModeVh),
         CFSTR(kIOPMCarrierModeVl),
+        CFSTR(kIOPMVact),
     };
 
     static CFSetRef genericSet = NULL;
@@ -794,7 +808,6 @@ exit:
 IOReturn IOPMSetPMPreferences(CFDictionaryRef ESPrefs)
 {
     bool result = false;
-    CFDictionaryRef tmp = NULL;
 
     if ((getuid() != 0) && (geteuid() != 0)) {
         return kIOReturnNotPrivileged;
@@ -806,15 +819,14 @@ IOReturn IOPMSetPMPreferences(CFDictionaryRef ESPrefs)
         result = setPreferencesForSrc(CFSTR(kIOPMUPSPowerKey), NULL, true);
 
     } else {
+        CFDictionaryRef acDict = CFDictionaryGetValue(ESPrefs, CFSTR(kIOPMACPowerKey));
+        CFDictionaryRef battDict = CFDictionaryGetValue(ESPrefs, CFSTR(kIOPMBatteryPowerKey));
+        CFDictionaryRef upsDict = CFDictionaryGetValue(ESPrefs, CFSTR(kIOPMUPSPowerKey));
+
         // Set each power source dictionary
-        tmp = CFDictionaryGetValue(ESPrefs, CFSTR(kIOPMACPowerKey));
-        setPreferencesForSrc(CFSTR(kIOPMACPowerKey), tmp, false);
-
-        tmp = CFDictionaryGetValue(ESPrefs, CFSTR(kIOPMBatteryPowerKey));
-        setPreferencesForSrc(CFSTR(kIOPMBatteryPowerKey), tmp, false);
-
-        tmp = CFDictionaryGetValue(ESPrefs, CFSTR(kIOPMUPSPowerKey));
-        result = setPreferencesForSrc(CFSTR(kIOPMUPSPowerKey), tmp, true);
+        result = setPreferencesForSrc(CFSTR(kIOPMACPowerKey), acDict, !battDict && !upsDict);
+        result |= setPreferencesForSrc(CFSTR(kIOPMBatteryPowerKey), battDict, !upsDict);
+        result |= setPreferencesForSrc(CFSTR(kIOPMUPSPowerKey), upsDict, true);
     }
 
     if (result) {
@@ -926,8 +938,12 @@ bool IOPMFeatureIsAvailable(CFStringRef PMFeature, CFStringRef power_source)
     if (!supportedFeatures)
         return false;
 
-    if( CFEqual(PMFeature, CFSTR(kIOPMDarkWakeBackgroundTaskKey)) )
+    if( CFEqual(PMFeature, CFSTR(kIOPMDarkWakeBackgroundTaskKey)) || CFEqual(PMFeature, CFSTR(kIOPMSleepServicesKey)) )
     {
+#if defined(TARGET_OS_OSX) && !defined(__x86_64__)
+        return_this_value = 1;
+        goto exit;
+#endif /* defined(TARGET_OS_OSX) && defined(__arm64__ */
 
 #if TARGET_OS_IPHONE
         goto exit;
@@ -1005,12 +1021,26 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
         || CFEqual(PMFeature, CFSTR(kIOPMDiskSleepKey))
         || CFEqual(PMFeature, CFSTR(kIOPMTTYSPreventSleepKey))
         || CFEqual(PMFeature, kIOPMSleepDisabledKey)
-        || CFEqual(PMFeature, CFSTR(kIOPMDestroyFVKeyOnStandbyKey)))
+        || CFEqual(PMFeature, CFSTR(kIOPMDestroyFVKeyOnStandbyKey))
+        || CFEqual(PMFeature, CFSTR(kIOPMUnifiedSleepSliderPrefKey)))
     {
         ret = true;
         goto exit;
     }
-
+#if defined(TARGET_OS_OSX) && !defined(__x86_64__)
+    if (CFEqual(PMFeature, CFSTR(kIOPMPowerNapSupportedKey))) {
+        ret = true;
+        goto exit;
+    }
+    if (CFEqual(PMFeature, CFSTR(kIOPMSleepServicesKey))) {
+        ret = true;
+        goto exit;
+    }
+    if (CFEqual(PMFeature, CFSTR(kIOPMDeepSleepEnabledKey))) {
+        ret = true;
+        goto exit;
+    }
+#endif /* defined(TARGET_OS_OSX) && !defined(__x86_64__) */
     /* deprecated - kIOPMRestartOnKernelPanicKey
      * 11195840 Remove "restart automatically if computer freezes" check-box
      */
@@ -1052,16 +1082,17 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
         // and on desktops with UPS with brightness-adjustable LCD displays.
         // These machines report a "DisplayDims" property in the
         // supportedFeatures dictionary.
+        // All laptops support ReduceBrightness
         // ReduceBrightness is never supported on AC Power.
         bool hasBatt = false;
         bool hasUPS = false;
         IOPSGetSupportedPowerSources(NULL, &hasBatt, &hasUPS);
 
-        if (( hasBatt || hasUPS )
-            && supportedFeatures
+        if (hasBatt && !CFEqual(power_source, CFSTR(kIOPMACPowerKey))) {
+            ret = true;
+        } else if (hasUPS && supportedFeatures
             && CFDictionaryGetValue(supportedFeatures, CFSTR("DisplayDims"))
-            && !CFEqual(power_source, CFSTR(kIOPMACPowerKey)) )
-        {
+            && !CFEqual(power_source, CFSTR(kIOPMACPowerKey))) {
             ret = true;
         } else {
             ret = false;
@@ -1199,6 +1230,12 @@ supportedNameForPMName( CFStringRef pm_name )
         return CFSTR("CarrierChargingMode");
     }
 #endif // TARGET_OS_IPHONE || TARGET_OS_WATCH
+#if TARGET_OS_OSX
+    if (CFEqual(pm_name, CFSTR(kIOPMVact)))
+    {
+        return CFSTR("VAC-T");
+    }
+#endif // TARGET_OS_OSX
 
     return pm_name;
 }
@@ -1742,7 +1779,42 @@ static CFDictionaryRef copyDefaultPreferences(void)
     if (ups) {
         CFDictionarySetValue(ups, CFSTR(kIOHibernateFileKey), CFSTR(kIOHibernateDefaultFile));
     }
+#if defined(TARGET_OS_OSX) && !defined(__x86_64__)
+    // set hibernatemode to 3 and enable standby for all portables
+    bool hasBatt = false;
+    IOReturn ret = IOPSGetSupportedPowerSources(NULL, &hasBatt, NULL);
+    if (ret == kIOReturnSuccess) {
+        if (hasBatt) {
+            int defaultHibernateMode = kIOHibernateModeOn | kIOHibernateModeSleep;
+            CFNumberRef cfHibernateMode = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &defaultHibernateMode);
+            if (batt) {
+                CFDictionarySetValue(batt, CFSTR(kIOHibernateModeKey), cfHibernateMode);
+            }
+            if (ac) {
+                CFDictionarySetValue(ac, CFSTR(kIOHibernateModeKey), cfHibernateMode);
+            }
+            if (ups) {
+                CFDictionarySetValue(ups, CFSTR(kIOHibernateModeKey), cfHibernateMode);
+            }
+            CFRelease(cfHibernateMode);
 
+            int defaultDeepSleepEnabled = 1;
+            CFNumberRef cfDeepSleepEnabled = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &defaultDeepSleepEnabled);
+            if (cfDeepSleepEnabled) {
+                if (batt) {
+                    CFDictionarySetValue(batt, CFSTR(kIOPMDeepSleepEnabledKey), cfDeepSleepEnabled);
+                }
+                if (ac) {
+                    CFDictionarySetValue(ac, CFSTR(kIOPMDeepSleepEnabledKey), cfDeepSleepEnabled);
+                }
+                if (ups) {
+                    CFDictionarySetValue(ups, CFSTR(kIOPMDeepSleepEnabledKey), cfDeepSleepEnabled);
+                }
+                CFRelease(cfDeepSleepEnabled);
+            }
+        }
+    }
+#endif /* defined(TARGET_OS_OSX) && !defined(__x86_64__) */
     prefs = CFDictionaryCreateMutable(0, kPowerSourcesCount,
             &kCFTypeDictionaryKeyCallBacks,
             &kCFTypeDictionaryValueCallBacks);
