@@ -21,41 +21,8 @@ framework module IOKit [extern_c] {
 
   export *
 
-  explicit module audio {
-    header "audio/IOAudioDefines.h"
-    header "audio/IOAudioLib.h"
-    header "audio/IOAudioTypes.h"
-    export *
-  }
-
-  explicit module avc {
-    header "avc/IOFireWireAVCConsts.h"
-    header "avc/IOFireWireAVCLib.h"
-    export *
-  }
-
-  explicit module firewire {
-    header "firewire/IOFireWireLib.h"
-    header "firewire/IOFireWireFamilyCommon.h"
-    header "firewire/IOFireWireLibIsoch.h"
-    export *
-
-    module deprecated {
-      requires unavailable
-      header "firewire/IOFWIsoch.h"
-    }
-  }
-
   explicit module graphics {
-    header "graphics/IOAccelClientConnect.h"
-    header "graphics/IOGraphicsInterface.h"
-    header "graphics/IOAccelSurfaceConnect.h"
-    header "graphics/IOGraphicsInterfaceTypes.h"
-    header "graphics/IOAccelTypes.h"
-    header "graphics/IOGraphicsLib.h"
-    header "graphics/IOFramebufferShared.h"
     header "graphics/IOGraphicsTypes.h"
-    header "graphics/IOGraphicsEngine.h"
     export *
   }
 
@@ -77,6 +44,7 @@ framework module IOKit [extern_c] {
     header "hid/IOHIDEventServiceKeys.h"
     header "hid/IOHIDEventServiceTypes.h"
     header "hid/IOHIDProperties.h"
+    header "hid/IOHIDUserDevice.h"
     export *
   }
 
@@ -94,24 +62,10 @@ framework module IOKit [extern_c] {
     export *
   }
   	
-  explicit module i2c {
-    header "i2c/IOI2CInterface.h"
-    export *
-  }
-
   explicit module kext {
     header "kext/KextManager.h"
     export *
   }
-
-  /* DPG: this module redefines bits from ApplicationServices.QD, which creates a
-          conflict.
-  explicit module ndrvsupport {
-    header "ndrvsupport/IOMacOSTypes.h"
-    header "ndrvsupport/IOMacOSVideo.h"
-    export *
-  }
-  */
 
   explicit module network {
     header "network/IOEthernetController.h"
@@ -125,6 +79,7 @@ framework module IOKit [extern_c] {
     header "network/IONetworkUserClient.h"
     header "network/IONetworkController.h"
     header "network/IONetworkMedium.h"
+    header "network/IOUserEthernetController.h"
     export *
   }
 
@@ -140,11 +95,6 @@ framework module IOKit [extern_c] {
     header "pwr_mgt/IOPMKeys.h"
     header "pwr_mgt/IOPMLib.h"
     header "pwr_mgt/IOPMLibDefs.h"
-    export *
-  }
-
-  explicit module sbp2 {
-    header "sbp2/IOFireWireSBP2Lib.h"
     export *
   }
 
@@ -169,54 +119,27 @@ framework module IOKit [extern_c] {
   }
 
   explicit module storage {
-    header "storage/IOAppleLabelScheme.h"
-    header "storage/IODVDMediaBSDClient.h"
     header "storage/IOApplePartitionScheme.h"
-    header "storage/IODVDTypes.h"
-    header "storage/IOBDBlockStorageDevice.h"
     header "storage/IOFDiskPartitionScheme.h"
-    header "storage/IOBDMedia.h"
     header "storage/IOFilterScheme.h"
-    header "storage/IOBDMediaBSDClient.h"
-    header "storage/IOFireWireStorageCharacteristics.h"
-    header "storage/IOBDTypes.h"
     header "storage/IOGUIDPartitionScheme.h"
     header "storage/IOBlockStorageDevice.h"
     header "storage/IOMedia.h"
     header "storage/IOBlockStorageDriver.h"
     header "storage/IOMediaBSDClient.h"
-    header "storage/IOCDBlockStorageDevice.h"
     header "storage/IOPartitionScheme.h"
-    header "storage/IOCDMedia.h"
     header "storage/IOStorage.h"
-    header "storage/IOCDMediaBSDClient.h"
     header "storage/IOStorageCardCharacteristics.h"
-    header "storage/IOCDPartitionScheme.h"
     header "storage/IOStorageDeviceCharacteristics.h"
-    header "storage/IOCDTypes.h"
     header "storage/IOStorageControllerCharacteristics.h"
     header "storage/IOStorageProtocolCharacteristics.h"
-    header "storage/IODVDBlockStorageDevice.h"
-    header "storage/IODVDMedia.h"
     export *
-
-    explicit module ata {
-      header "storage/ata/ATASMARTLib.h"
-      header "storage/ata/IOATAStorageDefines.h"
-      export *
-    }
   }
 
   explicit module stream {
     header "stream/IOStreamLib.h"
     header "stream/IOStreamShared.h"
     export *
-  }
-
-  explicit module usb {
-    umbrella "Headers/usb"
-    export *
-    module * { export * }
   }
 
   explicit module video {

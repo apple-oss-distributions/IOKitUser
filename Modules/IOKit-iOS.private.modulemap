@@ -1,10 +1,5 @@
 framework module IOKit_Private [extern_c] {
 
- explicit module graphics {
-    header "graphics/IOAccelSurfaceControl.h"
-    export *
- }
-
  explicit module hid {
     header "hid/IOHIDEvent.h"
     header "hid/IOHIDServiceClient.h"
