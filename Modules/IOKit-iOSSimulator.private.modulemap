@@ -1,4 +1,35 @@
-framework module IOKit [extern_c] {
+// The IOKit headers are all private in embedded OSes, hence
+// they're all listed in the private module map. There are
+// still separate IOKit and IOKit_Private modules for a few
+// reasons though.
+// 1. <IOKit/hidsystem/IOHIDEventSystemClient.h> declares
+//    IOHIDEventSystemClientRef which follows the normal Swift
+//    importer rules and becomes IOHIDEventSystemClient in
+//    Swift. However, <IOKit/hid/IOHIDEventSystemClient.h>
+//    declares the IOHIDEventSystemClient function, and if
+//    Swift sees that function while building the module for
+//    <IOKit/hidsystem/IOHIDEventSystemClient.h>, then it
+//    won't drop the Ref from the type. This "just works"
+//    on macOS since the hidsystem header is public and the
+//    hid header is private and thus are in different top
+//    level modules. To avoid chaos on embedded, they need
+//    to be kept in different top level modules there too,
+//    and the only allowed top level framework modules are
+//    Framework and Framework_Private. So we might as well
+//    mirror the macOS setup.
+// 2. It's probably nicer for Swift clients to not have to
+//    conditionalize their imports, e.g. don't make them do
+//    #if os(macOS)
+//    import IOKit
+//    #else
+//    import IOKit_Private
+//    #endif
+// It might seem like maybe embedded should have module.modulemap
+// instead of putting both of these in module.private.modulemap.
+// However, that would break the clang rule that PrivateHeaders
+// need to be covered by module.private.modulemap and not by
+// module.modulemap.
+framework module IOKit [extern_c] [system] {
   header "IOReturn.h"
   header "IOMapTypes.h"
   header "IOTypes.h"
@@ -61,7 +92,7 @@ framework module IOKit [extern_c] {
     header "hidsystem/IOHIDUserDevice.h"
     export *
   }
-  	
+
   explicit module kext {
     header "kext/KextManager.h"
     export *
@@ -135,6 +166,59 @@ framework module IOKit [extern_c] {
     header "video/IOVideoStreamFormatDictionary.h"
     header "video/IOVideoDeviceShared.h"
     header "video/IOVideoTypes.h"
+    export *
+  }
+}
+
+framework module IOKit_Private [extern_c] [system] {
+  header "IOReportTypes.h"
+  export *
+
+  explicit module graphics {
+    header "graphics/IOMobileFramebufferTypes.h"
+    header "graphics/IOSurfacePrivate.h"
+    export *
+  }
+  explicit module hid {
+    header "hid/IOHIDEvent.h"
+    header "hid/IOHIDServiceClient.h"
+    header "hid/IOHIDEventData.h"
+    header "hid/IOHIDEventTypes.h"
+    header "hid/IOHIDService.h"	
+    header "hid/IOHIDEventSystem.h"
+    header "hid/IOHIDEventSystemClient.h"
+    header "hid/IOHIDEventSystemKeys.h"	
+    header "hid/IOHIDServicePlugIn.h"	
+    header "hid/IOHIDTypes.h"	
+    header "hid/IOHIDEventSystemConnection.h"
+    header "hid/IOHIDEventPrivateKeys.h"
+    header "hid/IOHIDServiceKeys.h"
+    header "hid/AppleHIDUsageTables.h"
+    header "hid/AppleHIDMultitouchKeys.h"
+    header "hid/IOHIDPrivateKeys.h"
+    header "hid/IOHIDEventQueue.h"
+    header "hid/IOHIDEventMacroDefs.h"
+    header "hid/IOHIDEventStructDefs.h"
+    header "hid/IOHIDEventFieldDefs.h"
+    header "hid/IOHIDEventServiceKeys_Private.h"
+    export *
+  }
+  explicit module hidobjc {
+    header "hidobjc/hidobjcbase.h"
+    header "hidobjc/HIDDeviceBase.h"
+    header "hidobjc/HIDDeviceIvar.h"
+    header "hidobjc/HIDElementBase.h"
+    header "hidobjc/HIDElementIvar.h"
+    header "hidobjc/HIDEventBase.h"
+    header "hidobjc/HIDEventIvar.h"
+    header "hidobjc/HIDServiceClientBase.h"
+    header "hidobjc/HIDServiceClientIvar.h"
+    header "hidobjc/HIDServiceBase.h"
+    header "hidobjc/HIDServiceIvar.h"
+    header "hidobjc/HIDConnectionBase.h"
+    header "hidobjc/HIDConnectionIvar.h"
+    header "hidobjc/HIDSessionBase.h"
+    header "hidobjc/HIDSessionIvar.h"
     export *
   }
 }

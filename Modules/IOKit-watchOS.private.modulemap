@@ -129,20 +129,6 @@ framework module IOKit [extern_c] [system] {
     export *
   }
 
-  explicit module scsi {
-    header "scsi/IOSCSIMultimediaCommandsDevice.h"
-    header "scsi/SCSICmds_REQUEST_SENSE_Defs.h"
-    header "scsi/SCSICmds_INQUIRY_Definitions.h"
-    header "scsi/SCSICommandDefinitions.h"
-    header "scsi/SCSICmds_MODE_Definitions.h"
-    header "scsi/SCSICommandOperationCodes.h"
-    header "scsi/SCSICmds_READ_CAPACITY_Definitions.h"
-    header "scsi/SCSITask.h"
-    header "scsi/SCSICmds_REPORT_LUNS_Definitions.h"
-    header "scsi/SCSITaskLib.h"
-    export *
-  }
-
   explicit module serial {
     header "serial/IOSerialKeys.h"
     header "serial/ioss.h"
@@ -195,7 +181,6 @@ framework module IOKit_Private [extern_c] [system] {
   export *
 
   explicit module graphics {
-    header "graphics/AppleSRSDriverTypes_export.h"
     header "graphics/IOAccelBufferHeader.h"
     header "graphics/IOAccelCLContextConnect.h"
     header "graphics/IOAccelCommandQueueConnect.h"
