@@ -554,7 +554,8 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
 #define kPMASLAssertionActionSuspend            "Suspended"
 #define kPMASLAssertionActionResume             "Resumed"
 #define kPMASLAssertionActionSystemTimeout      "SystemTimeOutExpired"
-#define kPMASLAssertionActionOffloaded          "Offloaded"
+#define kPMASLAssertionActionSessionStart       "SessionStarted"
+#define kPMASLAssertionActionSessionEnd         "SessionEnded"
 
 // Async Assertion Actions
 #define kPMAsyncAssertionActionCreate             "Created"
@@ -563,7 +564,6 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
 #define kPMAsyncAssertionActionTurnOff            "TurnedOff"
 #define kPMAsyncAssertionActionTurnOn             "TurnedOn"
 #define kPMAsyncAssertionActionNameChange         "NameChange"
-#define kPMAsyncAssertionActionOffloaded          "Offloaded"
 
 
 #pragma mark Private Assertion Dictionary Keys
@@ -832,10 +832,10 @@ IOReturn IOPMRequestSysWake(CFDictionaryRef request);
  *                  restarted for system maintenance even when the assertion is active.
  *
  *                  A value of kCFBooleanFalse means that the system should NOT be restarted.
- *                  This is the default value when this key is not set.
+ *                  The default value is kCFBooleanTrue when this key is not set.
  *
  *                  This optional property can be set at the time of assertion creation and
- *                  cannot be changed later.
+ *                  cannot be changed later. This is only honored for kIOPMAssertPreventUserIdleSystemSleep and kIOPMAssertionTypeSystemIsActive assertions.
  */
 
 #define kIOPMAssertionAllowsDeviceRestart                   CFSTR("AllowsDeviceRestart")
@@ -3300,6 +3300,8 @@ void IOPMUnregisterNotification(IOPMNotificationHandle handle);
  *              incoming network activity. A local user may or may not be looking
  *              at the machine; as the machine may have been asleep or unattended.
  *
+ * @constant kIOPMUserAbsentWithDisplay The display is on without the user interacting with it.
+ *
  */
 enum {
     kIOPMUserPresentActive                  = (1<<0),
@@ -3307,7 +3309,8 @@ enum {
     kIOPMUserPresentPassiveWithDisplay      = (1<<2),
     kIOPMUserPresentPassiveWithoutDisplay   = (1<<3),
     kIOPMUserRemoteClientActive             = (1<<4),
-    kIOPMUserNotificationActive             = (1<<5)
+    kIOPMUserNotificationActive             = (1<<5),
+    kIOPMUserAbsentWithDisplay              = (1<<6)
 };
 
 #define kIOPMDefaultUserActivityTimeout (5*60)  // 5mins

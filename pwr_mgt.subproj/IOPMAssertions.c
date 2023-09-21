@@ -217,6 +217,7 @@ static CFMutableDictionaryRef       gInactiveAssertionsDict = NULL; // assertion
 static CFMutableArrayRef            gReleasedAssertionsList = NULL; // released assertions. Kept around for logging
 static CFMutableArrayRef            gTimedAssertionsList = NULL;
 static dispatch_source_t            gAssertionTimer = 0;
+bool                                assertion_timer_suspended = true;
 static uint64_t                     nextOffload_ts;
 static xpc_connection_t             gAssertionConnection;
 
@@ -569,6 +570,7 @@ bool createAsyncAssertion(CFDictionaryRef AssertionProperties, IOPMAssertionID *
         uint32_t  idx;
         CFMutableDictionaryRef  mutableProps;
         CFNumberRef numRef;
+        uint64_t  unique_id;
 
         // Initial setup
         initialSetup();
@@ -632,6 +634,15 @@ bool createAsyncAssertion(CFDictionaryRef AssertionProperties, IOPMAssertionID *
             // add to gTurnedOffAssertionsList and exit
             DEBUG_LOG("Initial level is off for 0x%x: %@", *id, mutableProps);
             CFDictionarySetValue(gInactiveAssertionsDict, (uintptr_t)idx, (const void *)mutableProps);
+
+            // We generate an ID on each activation, but generating one here will ensure we have
+            // an ID to use if this assertion is released without ever being activated.
+            unique_id = MAKE_UNIQUE_AID(getMonotonicTime(), *id, getpid());
+            CFNumberRef unique_id_cf = CFNumberCreate(0, kCFNumberSInt64Type, &unique_id);
+            if (unique_id_cf) {
+                CFDictionarySetValue(mutableProps, kIOPMAssertionGlobalUniqueIDKey, unique_id_cf);
+                CFRelease(unique_id_cf);
+            }
         } else {
             activateAsyncAssertion(*id, kAsyncAssertionCreateLog);
         }
@@ -673,17 +684,6 @@ IOReturn _releaseAsycnAssertion(IOPMAssertionID AssertionID, bool removeTimed, b
         }
     } else if (CFDictionaryContainsKey(gInactiveAssertionsDict, (uintptr_t)idx)) {
         CFDictionaryRemoveValue(gInactiveAssertionsDict, (uintptr_t)idx);
-        // not adding to released list because we would have logged the turn off event as
-        // a release
-        // if this assertion was timed out by powerd, let's send a release
-        if (CFDictionaryContainsKey(value, kIOPMAsyncRemoteAssertionIdKey)) {
-
-            CFNumberRef cf_remote_id = CFDictionaryGetValue(value, kIOPMAsyncRemoteAssertionIdKey);
-            int remote_id = 0;
-            CFNumberGetValue(cf_remote_id, kCFNumberSInt32Type, &remote_id);
-            INFO_LOG("Powerd turned off this assertion. let's send a release for %u", (uint32_t)remote_id);
-            sendAsyncReleaseMsg(remote_id, false, gCurrentRemoteAssertionIsCoalesced);
-        }
     }
 
     // remove from gAssertionDict
@@ -1073,12 +1073,6 @@ void processAssertionTimeout(xpc_object_t msg)
         CFTypeRef assertion = CFDictionaryGetValue(gAssertionsDict, (uintptr_t)idx);
         if (!isA_CFDictionary(assertion)) {
             DEBUG_LOG("Assertion 0x%x has already been released", gCurrentAssertion);
-
-            if (id == gCurrentRemoteAssertion) {
-                // send a release to powerd
-                INFO_LOG("Assertion %u has already been released. Sending a release to powerd", gCurrentRemoteAssertion);
-                sendAsyncReleaseMsg(gCurrentRemoteAssertion, false, gCurrentRemoteAssertionIsCoalesced);
-            }
         } else {
             // remove from timed list
             removeFromTimedList(gCurrentAssertion);
@@ -1105,11 +1099,11 @@ void processAssertionTimeout(xpc_object_t msg)
                 CFDictionarySetValue(gInactiveAssertionsDict, (uintptr_t)idx, assertion);
             }
         }
-        if (remoteAssertionTimedOut) {
-            gCurrentAssertion = 0;
-            gCurrentRemoteAssertion = 0;
-            gCurrentRemoteAssertionIsCoalesced = false;
-        }
+    }
+    if (remoteAssertionTimedOut) {
+        gCurrentAssertion = 0;
+        gCurrentRemoteAssertion = 0;
+        gCurrentRemoteAssertionIsCoalesced = false;
     }
 
     // offload any assertions
@@ -1254,6 +1248,7 @@ void handleAssertionTimeout(void)
 {
     // look through list and release assertion
     uint64_t now = getMonotonicTime();
+    DEBUG_LOG("handleAssertionTimeout fired %llu", now);
     uint64_t timeout_ts = 0;
     int i = 0;
     for (i = 0; i < CFArrayGetCount(gTimedAssertionsList); i++) {
@@ -1304,7 +1299,11 @@ void handleAssertionTimeout(void)
         CFArrayRemoveValueAtIndex(gTimedAssertionsList, 0);
     }
 
-    dispatch_suspend(gAssertionTimer);
+    if (!assertion_timer_suspended) {
+        DEBUG_LOG("Suspending timer");
+        dispatch_suspend(gAssertionTimer);
+        assertion_timer_suspended = true;
+    }
     // find the next timeout and arm timer
     if (CFArrayGetCount(gTimedAssertionsList) != 0) {
         CFMutableDictionaryRef earliest_assertion = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(gTimedAssertionsList, 0);
@@ -1312,7 +1311,11 @@ void handleAssertionTimeout(void)
         CFNumberGetValue(nextTimeout, kCFNumberSInt64Type, &timeout_ts);
         uint64_t delta = timeout_ts - now;
         dispatch_source_set_timer(gAssertionTimer, dispatch_time(DISPATCH_TIME_NOW, delta * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
-        dispatch_resume(gAssertionTimer);
+        if (assertion_timer_suspended) {
+            DEBUG_LOG("Resuming timer");
+            dispatch_resume(gAssertionTimer);
+            assertion_timer_suspended = false;
+        }
         DEBUG_LOG("handleAssertionTimeout: Setting assertion timeout to fire in %llu secs", delta);
     }
 }
@@ -1345,7 +1348,11 @@ void insertIntoTimedList(CFMutableDictionaryRef props)
         }
     } else {
         // suspend the current timer and arm the new one
-        dispatch_suspend(gAssertionTimer);
+        if (!assertion_timer_suspended) {
+            DEBUG_LOG("Suspending timer");
+            dispatch_suspend(gAssertionTimer);
+            assertion_timer_suspended = true;
+        }
     }
     uint64_t now = getMonotonicTime();
     uint64_t earliest_timeout = 0;
@@ -1357,9 +1364,14 @@ void insertIntoTimedList(CFMutableDictionaryRef props)
         handleAssertionTimeout();
     } else {
         if (gAssertionTimer) {
-            DEBUG_LOG("Setting assertion timeout to fire in %d secs", delta);
+            DEBUG_LOG("Setting assertion timeout to fire in %d secs for timeout_ts %llu", delta, earliest_timeout);
             dispatch_source_set_timer(gAssertionTimer, dispatch_time(DISPATCH_TIME_NOW, delta * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
-            dispatch_resume(gAssertionTimer);
+            if (assertion_timer_suspended) {
+                INFO_LOG("Resuming timer")
+                assertion_timer_suspended = false;
+                dispatch_resume(gAssertionTimer);
+
+            }
         }
     }
 }
@@ -2018,16 +2030,31 @@ IOReturn IOPMAssertionCreateWithProperties(
         saveBackTrace(mutableProps);
     }
 
-    flattenedProps = CFPropertyListCreateData(0, (mutableProps != NULL) ? mutableProps : AssertionProperties, 
-                                              kCFPropertyListBinaryFormat_v1_0, 0, NULL /* error */);
+    if (isA_CFString(assertionTypeString) &&
+            (CFEqual(assertionTypeString, kIOPMAssertPreventUserIdleSystemSleep) ||
+             CFEqual(assertionTypeString, kIOPMAssertionTypeNoIdleSleep) ||
+             CFEqual(assertionTypeString, kIOPMAssertionTypeSystemIsActive))) {
+        if (!mutableProps) {
+            mutableProps = CFDictionaryCreateMutableCopy(NULL, 0, AssertionProperties);
+        }
+
+        // If client doesn't indicate a preference, always opt them in to allow device restart
+        if (!CFDictionaryContainsKey(mutableProps, kIOPMAssertionAllowsDeviceRestart)) {
+            CFDictionarySetValue(mutableProps, kIOPMAssertionAllowsDeviceRestart, kCFBooleanTrue);
+        }
+    }
+
+    flattenedProps = CFPropertyListCreateData(0, mutableProps ? mutableProps : AssertionProperties,
+                                              kCFPropertyListBinaryFormat_v1_0, 0,
+                                              NULL /* error */);
     if (!flattenedProps) {
         return_code = kIOReturnBadArgument;
         goto exit;
     }
 
+    asyncMode = createAsyncAssertion(mutableProps ? mutableProps : AssertionProperties,
+                                     (IOPMAssertionID *)AssertionID);
 
-    asyncMode = createAsyncAssertion(
-            AssertionProperties, (IOPMAssertionID *)AssertionID);
     if (!asyncMode) {
         kern_result = io_pm_assertion_create( pm_server,
                                               (vm_offset_t)CFDataGetBytePtr(flattenedProps),

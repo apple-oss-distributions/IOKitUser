@@ -341,6 +341,8 @@ typedef struct __OSKext {
 #define __kOSKextPrivateKPI              CFSTR("com.apple.kpi.private")
 #define __kOSKextKasanKPI                CFSTR("com.apple.kpi.kasan")
 #define __kOSKextKasanKPIVersion         CFSTR("8.0.0b1")
+#define __kOSKextKcovKPI                 CFSTR("com.apple.kpi.kcov")
+#define __kOSKextKcovKPIVersion          CFSTR("8.0.0b1")
 
 /* Used when generating symbols.
  */
@@ -8066,7 +8068,7 @@ Boolean __OSKextResolveDependencies(
     }
 
     /*
-     * If this is a KASan kext, implicitly link against the KASan bundle.
+     * If this is a KASan kext, implicitly link against the KASan and Kcov bundles.
      */
     if (OSKextDeclaresExecutable(aKext) && __OSKextHasSuffix(aKext, "_kasan")) {
         OSKextRef kasan_kext = OSKextGetKextWithIdentifier(__kOSKextKasanKPI);
@@ -8074,6 +8076,13 @@ Boolean __OSKextResolveDependencies(
             OSKextLog(aKext, kOSKextLogDetailLevel | kOSKextLogDependenciesFlag,
                     "%s adding implicit KASan dependency", kextPath);
             CFArrayAppendValue(aKext->loadInfo->dependencies, kasan_kext);
+        }
+
+        OSKextRef kcov_kext = OSKextGetKextWithIdentifier(__kOSKextKcovKPI);
+        if (kcov_kext) {
+            OSKextLog(aKext, kOSKextLogDetailLevel | kOSKextLogDependenciesFlag,
+                    "%s adding implicit Kcov dependency", kextPath);
+            CFArrayAppendValue(aKext->loadInfo->dependencies, kcov_kext);
         }
     }
 
@@ -15295,7 +15304,7 @@ Boolean __OSKextAddToMkext(
     }
 
     /*
-     * If this is a KASan kext, implicitly link against the KASan bundle.
+     * If this is a KASan kext, implicitly link against the KASan and Kcov bundles.
      * We've done this already in __OSKextResolveDependencies, but we have
      * to add the dependency to the kext's Info.plist that's sent to the kernel.
      */
@@ -15306,6 +15315,10 @@ Boolean __OSKextAddToMkext(
             CFStringRef kasanVer = (CFStringRef)CFDictionaryGetValue(depsDict, __kOSKextKasanKPI);
             if (!kasanVer) {
                 CFDictionarySetValue(depsDict, __kOSKextKasanKPI, __kOSKextKasanKPIVersion);
+            }
+            CFStringRef kcovVer = (CFStringRef)CFDictionaryGetValue(depsDict, __kOSKextKcovKPI);
+            if (!kcovVer) {
+                CFDictionarySetValue(depsDict, __kOSKextKcovKPI, __kOSKextKcovKPIVersion);
             }
         } else {
             OSKextLog(aKext, kOSKextLogErrorLevel | kOSKextLogArchiveFlag,
@@ -16991,6 +17004,11 @@ finish:
     return result;
 }
 
+struct _macho_section_size_accumulator_context {
+    struct max_data *md;
+    OSKextRef aKext;
+};
+
 static macho_seek_result
 _macho_section_size_accumulator(struct load_command *lc, const void * file_end __unused, uint8_t swap __unused, void *user_data) {
     struct segment_command_64 *seg;
@@ -16999,8 +17017,10 @@ _macho_section_size_accumulator(struct load_command *lc, const void * file_end _
     uint64_t max_off = 0;
     struct max_data *md;
     enum enumSegIdx segIndex;
+    OSKextRef aKext;
 
-    md = (struct max_data *)user_data;
+    md = ((struct _macho_section_size_accumulator_context *)user_data)->md;
+    aKext = ((struct _macho_section_size_accumulator_context *)user_data)->aKext;
 
     //kcgen_verboseLog("md %p lc->cmd %x cmdSize %x", md, lc->cmd, lc->cmdsize);
 
@@ -17016,7 +17036,13 @@ _macho_section_size_accumulator(struct load_command *lc, const void * file_end _
             //kcgen_verboseLog("sec %d (%s %s) addr %llx size %llx start_off %llx end_off %llx max_off %llx", i, sec->segname, sec->sectname, sec->addr, sec->size, start_off, end_off, max_off);
             sec = (struct section_64 *)((char *)sec + sizeof(struct section_64));
         }
-        assert(getSegIndex(seg->segname, &segIndex));
+        if (!getSegIndex(seg->segname, &segIndex)) {
+            OSKextLog(aKext,
+                      kOSKextLogErrorLevel | kOSKextLogGeneralFlag,
+                      "Invalid/Unknown segment: %s <%s %d>",
+                      seg->segname, __func__, __LINE__);
+            abort();
+        }
         assert(segIndex < SEG_IDX_COUNT);
 
         md->seg_data[segIndex].vmaddr  = seg->vmaddr;
@@ -17034,6 +17060,10 @@ static void __OSKextGetEffectiveSegmentSizes(OSKextRef kext, struct max_data *md
     CFDataRef kextExecutable = NULL;
     struct mach_header *hdr;
     void *file_end;
+    struct _macho_section_size_accumulator_context context = {
+        .md = md,
+        .aKext = kext,
+    };
 
     kextExecutable = OSKextCopyExecutableForArchitecture(kext,
                         OSKextGetArchitecture());
@@ -17043,7 +17073,7 @@ static void __OSKextGetEffectiveSegmentSizes(OSKextRef kext, struct max_data *md
     hdr = (struct mach_header *)CFDataGetBytePtr(kextExecutable);
     file_end = (char *)hdr + CFDataGetLength(kextExecutable);
     
-    macho_scan_load_commands(hdr, file_end, _macho_section_size_accumulator, md);
+    macho_scan_load_commands(hdr, file_end, _macho_section_size_accumulator, &context);
 
     CFRelease(kextExecutable);
 }
