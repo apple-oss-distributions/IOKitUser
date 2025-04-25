@@ -203,6 +203,7 @@ static inline void saveBackTrace(CFMutableDictionaryRef props)
 #define ASYNC_IDX_FROM_ID(id)   (((id) >> 16) & 0x7fff)
 #define IS_ASYNC_ID(id) ((id) & (0xffff << 16))
 #define MAKE_UNIQUE_AID(time, id, pid) (((time & 0xffffffff) << 32 ) | ((pid & 0xffff) << 16) | ((id & 0xffff0000) >> 16))
+#define SIM_ASSERTION_ID 0xffff
 
 typedef struct {
     uint32_t                idx;
@@ -219,6 +220,7 @@ static CFMutableArrayRef            gTimedAssertionsList = NULL;
 static dispatch_source_t            gAssertionTimer = 0;
 bool                                assertion_timer_suspended = true;
 static uint64_t                     nextOffload_ts;
+static uint64_t                     gOffloadDelay = kAsyncAssertionsDefaultOffloadDelay;
 static xpc_connection_t             gAssertionConnection;
 
 // current local assertion id sent to powerd
@@ -274,7 +276,7 @@ bool multipleActiveAssertionsExist(void);
 
 void checkFeatureEnabled()
 {
-#if TARGET_OS_IOS
+#if TARGET_OS_IOS && !TARGET_OS_SIMULATOR
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         dispatch_sync(getPMQueue(), ^{
@@ -296,6 +298,11 @@ void checkFeatureEnabled()
                         bool feature = xpc_dictionary_get_bool(resp, kAssertionFeatureSupportKey);
                         INFO_LOG("Assertion feature: setting gAsyncMode to %d", feature);
                         gAsyncMode = feature;
+                        uint64_t offload_delay = xpc_dictionary_get_int64(resp, kAssertionAsyncOffloadDelay);
+                        if (offload_delay) {
+                            INFO_LOG("Async assertion: setting offload delay to %llu", offload_delay);
+                            gOffloadDelay = offload_delay;
+                        }
                     }
                 });
                 if (msg) {
@@ -330,8 +337,7 @@ uint64_t getMonotonicTime( )
 
     if (timebaseInfo.denom == 0)
         mach_timebase_info(&timebaseInfo);
-
-    return ( (mach_absolute_time( ) * timebaseInfo.numer) / (timebaseInfo.denom * NSEC_PER_SEC));
+    return ( (mach_absolute_time( ) * timebaseInfo.numer) / (timebaseInfo.denom * NSEC_PER_MSEC));
 }
 
 void setupLogging()
@@ -479,8 +485,8 @@ error_exit:
 void activateAsyncAssertion(IOPMAssertionID id, kIOPMAsyncAssertionLogAction logAction)
 {
     uint32_t  idx;
-    uint64_t  timeout_secs = 0;
-    uint64_t  timeout_ts = 0;
+    uint64_t timeout_msecs = 0;
+    uint64_t timeout_ts = 0;
     uint64_t  unique_id;
     CFNumberRef numRef;
 
@@ -511,11 +517,13 @@ void activateAsyncAssertion(IOPMAssertionID id, kIOPMAsyncAssertionLogAction log
     // timeout
     numRef = CFDictionaryGetValue(assertion, kIOPMAssertionTimeoutKey);
     if (isA_CFNumber(numRef))  {
+        uint64_t timeout_secs = 0;
         CFNumberGetValue(numRef, kCFNumberSInt64Type, &timeout_secs);
+        timeout_msecs = timeout_secs * 1000;
     }
-    if (timeout_secs) {
+    if (timeout_msecs) {
         // There is timeout.
-        timeout_ts = timeout_secs + getMonotonicTime();
+        timeout_ts = timeout_msecs + getMonotonicTime();
         CFNumberRef cf_timeout_ts = CFNumberCreate(NULL, kCFNumberSInt64Type, &timeout_ts);
         if (cf_timeout_ts) {
             CFDictionarySetValue(assertion, kIOPMAsyncAssertionTimeoutTimestamp, cf_timeout_ts);
@@ -523,21 +531,21 @@ void activateAsyncAssertion(IOPMAssertionID id, kIOPMAsyncAssertionLogAction log
         }
         insertIntoTimedList(assertion);
     }
-    if (kAsyncAssertionsDefaultOffloadDelay == 0) {
+    if (gOffloadDelay == 0) {
         offloadAssertions(false);
     } else {
-        if (!timeout_secs || (timeout_secs > kAsyncAssertionsDefaultOffloadDelay)) {
-            timeout_secs = kAsyncAssertionsDefaultOffloadDelay;
-            timeout_ts = getMonotonicTime() + timeout_secs;
+        if (!timeout_msecs || (timeout_msecs > gOffloadDelay)) {
+            timeout_msecs = gOffloadDelay;
+            timeout_ts = getMonotonicTime() + timeout_msecs;
         }
         if (!gCurrentAssertion && (!nextOffload_ts || (timeout_ts != 0 && timeout_ts < nextOffload_ts))) {
-            INFO_LOG("Setting gAssertionsOffloader timeout to %llu\n", timeout_secs);
+            INFO_LOG("Setting gAssertionsOffloader timeout to %llu\n", timeout_msecs);
             dispatch_source_set_timer(gAssertionsOffloader,
-                                      dispatch_time(DISPATCH_TIME_NOW, timeout_secs*NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
+                                      dispatch_time(DISPATCH_TIME_NOW, timeout_msecs*NSEC_PER_MSEC), DISPATCH_TIME_FOREVER, 0);
             if (!nextOffload_ts) {
                 dispatch_resume(gAssertionsOffloader);
             }
-            nextOffload_ts = getMonotonicTime() + timeout_secs;
+            nextOffload_ts = getMonotonicTime() + timeout_msecs;
         }
     }
 }
@@ -2082,7 +2090,7 @@ IOReturn IOPMAssertionCreateWithProperties(
         return_code = kIOReturnBadArgument;
         goto exit;
     }
-
+#if !TARGET_OS_SIMULATOR
     asyncMode = createAsyncAssertion(mutableProps ? mutableProps : AssertionProperties,
                                      (IOPMAssertionID *)AssertionID);
 
@@ -2109,9 +2117,8 @@ IOReturn IOPMAssertionCreateWithProperties(
     }
     else {
             return_code = kIOReturnSuccess;
-#if !TARGET_OS_SIMULATOR
             enTrIntensity = kEnTrQualSPKeepSystemAwake;
-#endif
+
     }
 
 #if !TARGET_OS_IPHONE
@@ -2131,11 +2138,14 @@ IOReturn IOPMAssertionCreateWithProperties(
 #endif
 
 
-#if !TARGET_OS_SIMULATOR
+
         if ((enTrIntensity != kEnTrQualNone) && assertionEnabled) {
             entr_act_begin(kEnTrCompSysPower, kEnTrActSPPMAssertion, *AssertionID,
                                     enTrIntensity, kEnTrValNone);
         }
+#else
+        *AssertionID = SIM_ASSERTION_ID;
+        return_code = kIOReturnSuccess;
 #endif
 
 exit:
@@ -2214,7 +2224,8 @@ void IOPMAssertionRetain(IOPMAssertionID theAssertion)
         goto exit;
     }
 
-    kern_result = io_pm_assertion_retain_release( pm_server, 
+#if !TARGET_OS_SIMULATOR
+    kern_result = io_pm_assertion_retain_release( pm_server,
                                                   (int)theAssertion,
                                                   kIOPMAssertionMIGDoRetain,
                                                   &retainCnt,
@@ -2236,13 +2247,14 @@ void IOPMAssertionRetain(IOPMAssertionID theAssertion)
             CFRelease(appSleepString);
         }
 #endif
-#if !TARGET_OS_SIMULATOR
         entr_act_modify(kEnTrCompSysPower, kEnTrActSPPMAssertion,
                                 (int)theAssertion, kEnTrModSPRetain, kEnTrValNone); 
-#endif
+
     }
 
-
+#else
+    return_code = kIOReturnSuccess;
+#endif
 exit:
     if (MACH_PORT_NULL != pm_server) {
         pm_connect_close(pm_server);
@@ -2283,6 +2295,7 @@ IOReturn IOPMAssertionRelease(IOPMAssertionID AssertionID)
         goto exit;
     }
 
+#if !TARGET_OS_SIMULATOR
     if (!asyncMode) {
             kern_result = io_pm_assertion_retain_release( pm_server,
                                                           (int)AssertionID,
@@ -2311,16 +2324,18 @@ IOReturn IOPMAssertionRelease(IOPMAssertionID AssertionID)
     }
 #endif
 
-#if !TARGET_OS_SIMULATOR
     if (retainCnt)
         entr_act_modify(kEnTrCompSysPower, kEnTrActSPPMAssertion,
                                 (int)AssertionID, kEnTrModSPRelease, kEnTrValNone);
     else
         entr_act_end(kEnTrCompSysPower, kEnTrActSPPMAssertion,
                                 (int)AssertionID, kEnTrQualNone, kEnTrValNone);
-#endif
+
 
     pm_connect_close(pm_server);
+#else
+    return_code = kIOReturnSuccess;
+#endif
 exit:
     return return_code;
 }
@@ -2388,7 +2403,7 @@ IOReturn IOPMAssertionSetProperty(IOPMAssertionID theAssertion, CFStringRef theP
     CFRelease(sendDict);
 
 
-
+#if !TARGET_OS_SIMULATOR
     if (!asyncMode) {
         kern_result = io_pm_assertion_set_properties(pm_server,
                                                      (int)theAssertion,
@@ -2430,7 +2445,6 @@ IOReturn IOPMAssertionSetProperty(IOPMAssertionID theAssertion, CFStringRef theP
 #endif
 
 
-#if !TARGET_OS_SIMULATOR
     if (enTrIntensity != kEnTrQualNone) {
         if (assertionEnabled) {
             entr_act_begin(kEnTrCompSysPower, kEnTrActSPPMAssertion, theAssertion,
@@ -2441,6 +2455,8 @@ IOReturn IOPMAssertionSetProperty(IOPMAssertionID theAssertion, CFStringRef theP
                          kEnTrQualNone, kEnTrValNone);
         }
     }
+#else
+    return_code = kIOReturnSuccess;
 #endif
 
 
@@ -2616,6 +2632,7 @@ IOReturn IOPMAssertionDeclareSystemActivityWithProperties(
         goto exit;
     }
 
+#if !TARGET_OS_SIMULATOR
     kern_result = io_pm_declare_system_active(
                                               pm_server,
                                               (int *)SystemState,
@@ -2623,6 +2640,12 @@ IOReturn IOPMAssertionDeclareSystemActivityWithProperties(
                                               CFDataGetLength(flattenedProps),
                                               (int *)AssertionID,
                                               &return_code);
+#else
+    kern_result = KERN_SUCCESS;
+    return_code = kIOReturnSuccess;
+    *AssertionID = SIM_ASSERTION_ID;
+    *SystemState = kIOPMSystemSleepReverted;
+#endif
 
     if(KERN_SUCCESS != kern_result) {
         return_code = kIOReturnInternalError;
@@ -2717,8 +2740,8 @@ IOReturn IOPMAssertionDeclareUserActivity(
         return_code = kIOReturnBadArgument;
         goto exit;
     }
-
-    kern_result = io_pm_declare_user_active( 
+#if !TARGET_OS_SIMULATOR
+    kern_result = io_pm_declare_user_active(
                                             pm_server, 
                                             userType,
                                             (vm_offset_t)CFDataGetBytePtr(flattenedProps),
@@ -2727,7 +2750,11 @@ IOReturn IOPMAssertionDeclareUserActivity(
                                             &disableAppSleep,
                                             &return_code);
 
-
+#else
+    kern_result = KERN_SUCCESS;
+    return_code = kIOReturnSuccess;
+    *AssertionID = SIM_ASSERTION_ID;
+#endif
     if(KERN_SUCCESS != kern_result) {
         return_code = kIOReturnInternalError;
         goto exit;
